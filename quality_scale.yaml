@@ -1,0 +1,14 @@
+rules:
+  config_flow: done
+  unique_config_entry: done
+  runtime_data: done
+  test_before_setup: todo
+  config_entry_unloading: done
+  docs_high_level_description: done
+  docs_installation: done
+  docs_removal: todo
+  entity_naming: exempt
+  entity_unique_id: exempt
+  diagnostics: todo
+  reauthentication_flow: exempt
+  test_coverage: todo

@@ -1,0 +1,18 @@
+announce:
+  name: Announce
+  description: Speak a one-shot DJ announcement on the configured player.
+  fields:
+    message:
+      name: Message
+      description: The message to speak.
+      required: true
+      example: This is Escondido Smart Home Radio.
+      selector:
+        text:
+    config_entry_id:
+      name: Config entry ID
+      description: Reserved for future multi-station support; omit this field in milestone 1.
+      required: false
+      example: 01J...
+      selector:
+        text:

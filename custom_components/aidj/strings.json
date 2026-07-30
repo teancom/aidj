@@ -1,0 +1,31 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up AI DJ",
+        "description": "Choose the media player and TTS entity for this DJ station.",
+        "data": {
+          "name": "Station name",
+          "player": "Media player",
+          "tts": "TTS entity"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "An AI DJ station is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Configure AI DJ",
+        "description": "Change the station name, media player, or TTS entity.",
+        "data": {
+          "name": "Station name",
+          "player": "Media player",
+          "tts": "TTS entity"
+        }
+      }
+    }
+  }
+}
