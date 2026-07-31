@@ -14,6 +14,8 @@ SERVICE_QUEUE_ADD: Final = "queue_add"
 CONF_NAME: Final = "name"
 CONF_PLAYER: Final = "player"
 CONF_TTS: Final = "tts"
+CONF_WEATHER: Final = "weather_entity_id"
+CONF_AGENT: Final = "agent_id"
 CONF_CONFIG_ENTRY_ID: Final = "config_entry_id"
 
 ATTR_MESSAGE: Final = "message"

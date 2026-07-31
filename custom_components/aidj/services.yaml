@@ -62,16 +62,16 @@ briefing:
   fields:
     weather_entity_id:
       name: Weather entity
-      description: The Home Assistant weather entity to summarize.
-      required: true
+      description: The Home Assistant weather entity to summarize. Uses the configured option when omitted.
+      required: false
       example: weather.forecast_home
       selector:
         entity:
           domain: weather
     agent_id:
       name: Conversation agent
-      description: The Home Assistant conversation agent to generate the briefing.
-      required: true
+      description: The Home Assistant conversation agent to generate the briefing. Uses the configured option when omitted.
+      required: false
       example: conversation.openai_conversation
       selector:
         conversation_agent:
@@ -95,16 +95,16 @@ briefing_next:
   fields:
     weather_entity_id:
       name: Weather entity
-      description: The Home Assistant weather entity to summarize.
-      required: true
+      description: The Home Assistant weather entity to summarize. Uses the configured option when omitted.
+      required: false
       example: weather.forecast_home
       selector:
         entity:
           domain: weather
     agent_id:
       name: Conversation agent
-      description: The Home Assistant conversation agent to generate the briefing.
-      required: true
+      description: The Home Assistant conversation agent to generate the briefing. Uses the configured option when omitted.
+      required: false
       example: conversation.openai_conversation
       selector:
         conversation_agent:

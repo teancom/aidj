@@ -11,7 +11,15 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 from homeassistant.helpers.selector import EntitySelectorConfig
 
-from .const import CONF_NAME, CONF_PLAYER, CONF_TTS, DEFAULT_NAME, DOMAIN
+from .const import (
+    CONF_AGENT,
+    CONF_NAME,
+    CONF_PLAYER,
+    CONF_TTS,
+    CONF_WEATHER,
+    DEFAULT_NAME,
+    DOMAIN,
+)
 
 
 class AiDjConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -73,6 +81,10 @@ class AiDjOptionsFlow(config_entries.OptionsFlow):
                 vol.Required(CONF_TTS, default=current[CONF_TTS]): selector.EntitySelector(
                     EntitySelectorConfig(domain="tts")
                 ),
+                vol.Optional(CONF_WEATHER, default=current.get(CONF_WEATHER, "")): selector.EntitySelector(
+                    EntitySelectorConfig(domain="weather")
+                ),
+                vol.Optional(CONF_AGENT, default=current.get(CONF_AGENT, "")): selector.ConversationAgentSelector(),
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

@@ -15,7 +15,7 @@ from .briefing import (
     WeatherEntityProvider,
     async_collect_briefing,
 )
-from .const import CONF_NAME, CONF_PLAYER, CONF_TTS
+from .const import CONF_AGENT, CONF_NAME, CONF_PLAYER, CONF_TTS, CONF_WEATHER
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -101,8 +101,8 @@ class AiDjRuntime:
         prompt: str | None = None,
     ) -> str:
         """Collect weather and generate a briefing without playback side effects."""
-        weather_entity_id = weather_entity_id.strip()
-        agent_id = agent_id.strip()
+        weather_entity_id = (weather_entity_id or self.settings.get(CONF_WEATHER, "")).strip()
+        agent_id = (agent_id or self.settings.get(CONF_AGENT, "")).strip()
         if not weather_entity_id or not agent_id:
             raise ServiceValidationError(
                 "weather_entity_id and agent_id must not be empty"

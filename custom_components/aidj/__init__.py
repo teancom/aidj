@@ -15,6 +15,8 @@ from .const import (
     CONF_CONFIG_ENTRY_ID,
     DOMAIN,
     ATTR_MEDIA_ID,
+    CONF_AGENT,
+    CONF_WEATHER,
     SERVICE_ANNOUNCE,
     SERVICE_ANNOUNCE_NEXT,
     SERVICE_BRIEFING,
@@ -42,8 +44,8 @@ SERVICE_QUEUE_ADD_SCHEMA = vol.Schema(
 )
 SERVICE_BRIEFING_SCHEMA = vol.Schema(
     {
-        vol.Required("weather_entity_id"): cv.string,
-        vol.Required("agent_id"): cv.string,
+        vol.Optional("weather_entity_id", default=""): cv.string,
+        vol.Optional("agent_id", default=""): cv.string,
         vol.Optional("prompt"): cv.string,
         vol.Optional(CONF_CONFIG_ENTRY_ID): cv.string,
     }
@@ -84,8 +86,8 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
         """Handle the aidj.briefing service."""
         runtime = _get_runtime(hass, call.data.get(CONF_CONFIG_ENTRY_ID))
         text = await runtime.async_generate_briefing(
-            call.data["weather_entity_id"],
-            call.data["agent_id"],
+            call.data.get(CONF_WEATHER, ""),
+            call.data.get(CONF_AGENT, ""),
             call.data.get("prompt"),
         )
         return {"text": text}
@@ -94,8 +96,8 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
         """Handle the aidj.briefing_next service."""
         runtime = _get_runtime(hass, call.data.get(CONF_CONFIG_ENTRY_ID))
         await runtime.async_briefing_next(
-            call.data["weather_entity_id"],
-            call.data["agent_id"],
+            call.data.get(CONF_WEATHER, ""),
+            call.data.get(CONF_AGENT, ""),
             call.data.get("prompt"),
         )
 

@@ -19,11 +19,13 @@
     "step": {
       "init": {
         "title": "Configure AI DJ",
-        "description": "Change the station name, media player, or TTS entity. Music Assistant queue control uses Home Assistant's configured Music Assistant integration.",
+        "description": "Change the station name, media player, TTS entity, weather source, or conversation agent. Music Assistant queue control uses Home Assistant's configured Music Assistant integration.",
         "data": {
           "name": "Station name",
           "player": "Media player",
-          "tts": "TTS entity"
+          "tts": "TTS entity",
+          "weather_entity_id": "Weather entity",
+          "agent_id": "Conversation agent"
         }
       }
     }

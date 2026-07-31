@@ -21,9 +21,11 @@ from custom_components.aidj.briefing import (
 )
 from custom_components.aidj.const import (
     ATTR_MESSAGE,
+    CONF_AGENT,
     CONF_NAME,
     CONF_PLAYER,
     CONF_TTS,
+    CONF_WEATHER,
     DOMAIN,
     SERVICE_QUEUE_ADD,
     SERVICE_ANNOUNCE,
@@ -254,6 +256,28 @@ async def test_config_flow_creates_entry_and_rejects_duplicate(
     )
     assert duplicate["type"] == "abort"
     assert duplicate["reason"] == "already_configured"
+
+
+@pytest.mark.asyncio
+async def test_options_flow_exposes_briefing_source_fields(
+    hass: HomeAssistant, enable_custom_integrations: None
+) -> None:
+    """Existing stations expose optional briefing source settings."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+        },
+    )
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+
+    assert result["type"] == "form"
+    assert CONF_WEATHER in result["data_schema"].schema
+    assert CONF_AGENT in result["data_schema"].schema
 
 
 @pytest.mark.asyncio
@@ -519,6 +543,55 @@ async def test_queue_read_uses_music_assistant_response(
     get_queue.assert_awaited_once()
     call: ServiceCall = get_queue.await_args.args[0]
     assert call.data == {"entity_id": "media_player.living_room_streamer_2"}
+
+
+@pytest.mark.asyncio
+async def test_briefing_service_uses_configured_source_defaults(
+    hass: HomeAssistant,
+) -> None:
+    """Briefing source options are used when service fields are omitted."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+        },
+        options={
+            CONF_WEATHER: "weather.forecast_home",
+            CONF_AGENT: "conversation.openai_conversation",
+        },
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set(
+        "weather.forecast_home",
+        "sunny",
+        {"friendly_name": "Forecast Home", "temperature": 89, "temperature_unit": "°F"},
+    )
+    conversation = AsyncMock(
+        return_value={"response": {"speech": {"plain": {"speech": "Sunny."}}}}
+    )
+    hass.services.async_register(
+        "conversation",
+        "process",
+        conversation,
+        supports_response=SupportsResponse.ONLY,
+    )
+    assert await aidj.async_setup(hass, {})
+    assert await aidj.async_setup_entry(hass, entry)
+
+    response = await hass.services.async_call(
+        DOMAIN,
+        SERVICE_BRIEFING,
+        {"prompt": "One sentence."},
+        blocking=True,
+        return_response=True,
+    )
+
+    assert response == {"text": "Sunny."}
+    assert conversation.await_args.args[0].data["agent_id"] == (
+        "conversation.openai_conversation"
+    )
 
 
 @pytest.mark.asyncio
