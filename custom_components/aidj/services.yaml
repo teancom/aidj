@@ -20,6 +20,24 @@ stop:
       example: 01J...
       selector:
         text:
+queue_add:
+  name: Add to queue
+  description: Add one media item to the configured Music Assistant queue without replacing it.
+  fields:
+    media_id:
+      name: Media ID
+      description: A Music Assistant URI or searchable media name.
+      required: true
+      example: spotify://track/1234567890
+      selector:
+        text:
+    config_entry_id:
+      name: Config entry ID
+      description: Reserved for future multi-station support.
+      required: false
+      example: 01J...
+      selector:
+        text:
 announce:
   name: Announce
   description: Speak a one-shot DJ announcement on the configured player.

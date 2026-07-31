@@ -23,6 +23,8 @@ Milestone 1 provides:
 - `aidj.start`, which resumes playback on the configured media player.
 - `aidj.stop`, which stops playback on the configured media player.
 - `aidj.announce`, which sends a supplied message to the configured TTS entity and media player.
+- `aidj.queue_add`, which adds one media item to the configured Music Assistant queue without replacing the existing queue.
+- An internal queue-read adapter using Home Assistant's response-capable `music_assistant.get_queue` action.
 
 Milestone 1 intentionally supports one station per Home Assistant instance. The optional `config_entry_id` field is reserved for the future multi-station configuration and is not needed yet.
 
@@ -36,11 +38,23 @@ data:
 
 If `config_entry_id` is supplied, it selects a specific AI DJ station. It is optional while the integration supports one station.
 
+### Queue control
+
+AI DJ targets the configured Home Assistant `media_player` entity for Music Assistant actions. It does not store a Music Assistant URL, token, or internal player ID. The safe queue action is:
+
+```yaml
+action: aidj.queue_add
+data:
+  media_id: spotify://track/example
+```
+
+This delegates to `music_assistant.play_media` with `enqueue: add`, so the existing queue is preserved. Queue inspection is implemented through `music_assistant.get_queue` and will be used by later orchestration milestones.
+
 ## Design goals
 
 - Use Home Assistant config entries and selectors instead of YAML configuration.
 - Use Home Assistant media-player and TTS abstractions.
-- Use the official Music Assistant Python client for queue operations when queue orchestration is introduced.
+- Use Home Assistant's Music Assistant integration for queue operations, avoiding a second MA connection or stored MA credentials.
 - Treat news as a provider interface. The first planned provider is Home Assistant Feedreader; direct RSS parsing is not part of the initial design.
 - Treat AI as optional infrastructure for generated DJ content, but skip an interruption when an AI briefing cannot be generated or validated.
 

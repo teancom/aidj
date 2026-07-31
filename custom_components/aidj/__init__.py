@@ -14,7 +14,9 @@ from .const import (
     ATTR_MESSAGE,
     CONF_CONFIG_ENTRY_ID,
     DOMAIN,
+    ATTR_MEDIA_ID,
     SERVICE_ANNOUNCE,
+    SERVICE_QUEUE_ADD,
     SERVICE_START,
     SERVICE_STOP,
 )
@@ -28,6 +30,12 @@ SERVICE_ANNOUNCE_SCHEMA = vol.Schema(
 )
 SERVICE_PLAYER_SCHEMA = vol.Schema(
     {vol.Optional(CONF_CONFIG_ENTRY_ID): cv.string}
+)
+SERVICE_QUEUE_ADD_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_MEDIA_ID): cv.string,
+        vol.Optional(CONF_CONFIG_ENTRY_ID): cv.string,
+    }
 )
 
 
@@ -66,6 +74,11 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
         runtime = _get_runtime(hass, call.data.get(CONF_CONFIG_ENTRY_ID))
         await runtime.async_stop()
 
+    async def async_handle_queue_add(call: ServiceCall) -> None:
+        """Handle the aidj.queue_add service."""
+        runtime = _get_runtime(hass, call.data.get(CONF_CONFIG_ENTRY_ID))
+        await runtime.async_queue_add(call.data[ATTR_MEDIA_ID])
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_ANNOUNCE,
@@ -83,6 +96,12 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
         SERVICE_STOP,
         async_handle_stop,
         schema=SERVICE_PLAYER_SCHEMA,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_QUEUE_ADD,
+        async_handle_queue_add,
+        schema=SERVICE_QUEUE_ADD_SCHEMA,
     )
     return True
 

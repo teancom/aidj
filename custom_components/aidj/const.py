@@ -6,6 +6,7 @@ DOMAIN: Final = "aidj"
 SERVICE_ANNOUNCE: Final = "announce"
 SERVICE_START: Final = "start"
 SERVICE_STOP: Final = "stop"
+SERVICE_QUEUE_ADD: Final = "queue_add"
 
 CONF_NAME: Final = "name"
 CONF_PLAYER: Final = "player"
@@ -13,5 +14,6 @@ CONF_TTS: Final = "tts"
 CONF_CONFIG_ENTRY_ID: Final = "config_entry_id"
 
 ATTR_MESSAGE: Final = "message"
+ATTR_MEDIA_ID: Final = "media_id"
 
 DEFAULT_NAME: Final = "AI DJ"

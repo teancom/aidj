@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Set up AI DJ",
-        "description": "Choose the media player and TTS entity for this DJ station.",
+        "description": "Choose the media player and TTS entity for this DJ station. Music Assistant queue control uses Home Assistant's configured Music Assistant integration.",
         "data": {
           "name": "Station name",
           "player": "Media player",
@@ -19,7 +19,7 @@
     "step": {
       "init": {
         "title": "Configure AI DJ",
-        "description": "Change the station name, media player, or TTS entity.",
+        "description": "Change the station name, media player, or TTS entity. Music Assistant queue control uses Home Assistant's configured Music Assistant integration.",
         "data": {
           "name": "Station name",
           "player": "Media player",

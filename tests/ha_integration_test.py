@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 from homeassistant.config_entries import SOURCE_USER
 from homeassistant.const import STATE_IDLE
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components import aidj
@@ -17,6 +17,7 @@ from custom_components.aidj.const import (
     CONF_PLAYER,
     CONF_TTS,
     DOMAIN,
+    SERVICE_QUEUE_ADD,
     SERVICE_ANNOUNCE,
     SERVICE_START,
     SERVICE_STOP,
@@ -107,6 +108,78 @@ async def test_announce_calls_tts_speak_with_configured_targets(
         ATTR_MESSAGE: "Welcome to the living room.",
         "cache": False,
     }
+
+
+@pytest.mark.asyncio
+async def test_queue_add_uses_music_assistant_without_replacing_queue(
+    hass: HomeAssistant,
+) -> None:
+    """Queue additions use HA's Music Assistant action and append safely."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+        },
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set("media_player.living_room_streamer_2", STATE_IDLE)
+
+    play_media = AsyncMock()
+    hass.services.async_register("music_assistant", "play_media", play_media)
+    assert await aidj.async_setup(hass, {})
+    assert await aidj.async_setup_entry(hass, entry)
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_QUEUE_ADD,
+        {"media_id": "  spotify://track/example  "},
+        blocking=True,
+    )
+
+    play_media.assert_awaited_once()
+    call: ServiceCall = play_media.await_args.args[0]
+    assert call.data == {
+        "media_id": "spotify://track/example",
+        "enqueue": "add",
+        "entity_id": "media_player.living_room_streamer_2",
+    }
+
+
+@pytest.mark.asyncio
+async def test_queue_read_uses_music_assistant_response(
+    hass: HomeAssistant,
+) -> None:
+    """Queue reads use HA's response-capable Music Assistant action."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+        },
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set("media_player.living_room_streamer_2", STATE_IDLE)
+
+    get_queue = AsyncMock(return_value={"media_player.living_room_streamer_2": {"items": []}})
+    hass.services.async_register(
+        "music_assistant",
+        "get_queue",
+        get_queue,
+        supports_response=SupportsResponse.ONLY,
+    )
+    assert await aidj.async_setup(hass, {})
+    assert await aidj.async_setup_entry(hass, entry)
+
+    runtime = hass.data[DOMAIN][entry.entry_id]
+    queue = await runtime.async_get_queue()
+
+    assert queue == {"media_player.living_room_streamer_2": {"items": []}}
+    get_queue.assert_awaited_once()
+    call: ServiceCall = get_queue.await_args.args[0]
+    assert call.data == {"entity_id": "media_player.living_room_streamer_2"}
 
 
 @pytest.mark.asyncio
