@@ -40,7 +40,7 @@ queue_add:
         text:
 announce:
   name: Announce
-  description: Speak a one-shot DJ announcement on the configured player.
+  description: Speak a one-shot DJ announcement on the configured player immediately.
   fields:
     message:
       name: Message
@@ -52,6 +52,24 @@ announce:
     config_entry_id:
       name: Config entry ID
       description: Reserved for future multi-station support; omit this field in milestone 1.
+      required: false
+      example: 01J...
+      selector:
+        text:
+announce_next:
+  name: Announce at next track
+  description: Queue an announcement for the next different track on the configured player.
+  fields:
+    message:
+      name: Message
+      description: The message to speak after the current track changes.
+      required: true
+      example: Coming up next on Escondido Smart Home Radio.
+      selector:
+        text:
+    config_entry_id:
+      name: Config entry ID
+      description: Reserved for future multi-station support.
       required: false
       example: 01J...
       selector:

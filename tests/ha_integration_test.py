@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from homeassistant.config_entries import SOURCE_USER
-from homeassistant.const import STATE_IDLE
+from homeassistant.const import STATE_IDLE, STATE_PLAYING
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -19,6 +19,7 @@ from custom_components.aidj.const import (
     DOMAIN,
     SERVICE_QUEUE_ADD,
     SERVICE_ANNOUNCE,
+    SERVICE_ANNOUNCE_NEXT,
     SERVICE_START,
     SERVICE_STOP,
 )
@@ -108,6 +109,95 @@ async def test_announce_calls_tts_speak_with_configured_targets(
         ATTR_MESSAGE: "Welcome to the living room.",
         "cache": False,
     }
+
+
+def _set_playing_track(hass: HomeAssistant, entity_id: str, media_id: str, title: str) -> None:
+    """Set a realistic playing media-player state for transition tests."""
+    hass.states.async_set(
+        entity_id,
+        STATE_PLAYING,
+        {
+            "media_content_id": media_id,
+            "media_artist": "Test Artist",
+            "media_title": title,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_announce_next_waits_for_a_different_playing_track(
+    hass: HomeAssistant,
+) -> None:
+    """Boundary announcements speak only after the configured player advances."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+        },
+    )
+    entry.add_to_hass(hass)
+    player = "media_player.living_room_streamer_2"
+    _set_playing_track(hass, player, "library://track/current", "Current")
+    hass.states.async_set("tts.openai_tts", STATE_IDLE)
+    tts_speak = AsyncMock()
+    hass.services.async_register("tts", "speak", tts_speak)
+    assert await aidj.async_setup(hass, {})
+    assert await aidj.async_setup_entry(hass, entry)
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_ANNOUNCE_NEXT,
+        {ATTR_MESSAGE: "Coming up next."},
+        blocking=True,
+    )
+    _set_playing_track(hass, "sensor.unrelated", "ignored", "Ignored")
+    _set_playing_track(hass, player, "library://track/current", "Current")
+    await hass.async_block_till_done()
+    tts_speak.assert_not_awaited()
+
+    _set_playing_track(hass, player, "library://track/next", "Next")
+    await hass.async_block_till_done()
+
+    tts_speak.assert_awaited_once()
+    call: ServiceCall = tts_speak.await_args.args[0]
+    assert call.data[ATTR_MESSAGE] == "Coming up next."
+
+
+@pytest.mark.asyncio
+async def test_announce_next_is_cancelled_when_entry_unloads(
+    hass: HomeAssistant,
+) -> None:
+    """A reload cannot leave a pending announcement speaking later."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+        },
+    )
+    entry.add_to_hass(hass)
+    player = "media_player.living_room_streamer_2"
+    _set_playing_track(hass, player, "library://track/current", "Current")
+    hass.states.async_set("tts.openai_tts", STATE_IDLE)
+    tts_speak = AsyncMock()
+    hass.services.async_register("tts", "speak", tts_speak)
+    assert await aidj.async_setup(hass, {})
+    assert await aidj.async_setup_entry(hass, entry)
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_ANNOUNCE_NEXT,
+        {ATTR_MESSAGE: "Do not speak."},
+        blocking=True,
+    )
+    assert await aidj.async_unload_entry(hass, entry)
+    _set_playing_track(hass, player, "library://track/next", "Next")
+    await hass.async_block_till_done()
+
+    tts_speak.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -16,6 +16,7 @@ from .const import (
     DOMAIN,
     ATTR_MEDIA_ID,
     SERVICE_ANNOUNCE,
+    SERVICE_ANNOUNCE_NEXT,
     SERVICE_QUEUE_ADD,
     SERVICE_START,
     SERVICE_STOP,
@@ -64,6 +65,11 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
         runtime = _get_runtime(hass, call.data.get(CONF_CONFIG_ENTRY_ID))
         await runtime.async_announce(call.data[ATTR_MESSAGE])
 
+    async def async_handle_announce_next(call: ServiceCall) -> None:
+        """Handle the aidj.announce_next service."""
+        runtime = _get_runtime(hass, call.data.get(CONF_CONFIG_ENTRY_ID))
+        await runtime.async_announce_next(call.data[ATTR_MESSAGE])
+
     async def async_handle_start(call: ServiceCall) -> None:
         """Handle the aidj.start service."""
         runtime = _get_runtime(hass, call.data.get(CONF_CONFIG_ENTRY_ID))
@@ -83,6 +89,12 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
         DOMAIN,
         SERVICE_ANNOUNCE,
         async_handle_announce,
+        schema=SERVICE_ANNOUNCE_SCHEMA,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_ANNOUNCE_NEXT,
+        async_handle_announce_next,
         schema=SERVICE_ANNOUNCE_SCHEMA,
     )
     hass.services.async_register(
@@ -121,5 +133,7 @@ async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> Non
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload an AI DJ config entry."""
-    hass.data[DOMAIN].pop(entry.entry_id, None)
+    runtime = hass.data[DOMAIN].pop(entry.entry_id, None)
+    if runtime is not None:
+        runtime.async_unload()
     return True
