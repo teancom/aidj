@@ -13,6 +13,7 @@ from homeassistant.helpers.selector import EntitySelectorConfig
 
 from .const import (
     CONF_AGENT,
+    CONF_FEED,
     CONF_NAME,
     CONF_PLAYER,
     CONF_TTS,
@@ -85,6 +86,9 @@ class AiDjOptionsFlow(config_entries.OptionsFlow):
                     EntitySelectorConfig(domain="weather")
                 ),
                 vol.Optional(CONF_AGENT, default=current.get(CONF_AGENT, "")): selector.ConversationAgentSelector(),
+                vol.Optional(CONF_FEED, default=current.get(CONF_FEED, "")): selector.EntitySelector(
+                    EntitySelectorConfig(domain="event")
+                ),
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

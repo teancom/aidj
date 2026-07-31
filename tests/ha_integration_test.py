@@ -14,6 +14,7 @@ from custom_components import aidj
 from custom_components.aidj.briefing import (
     BriefingItem,
     EntityStateProvider,
+    FeedreaderEventProvider,
     HaConversationBriefingGenerator,
     QueueProvider,
     WeatherEntityProvider,
@@ -22,6 +23,7 @@ from custom_components.aidj.briefing import (
 from custom_components.aidj.const import (
     ATTR_MESSAGE,
     CONF_AGENT,
+    CONF_FEED,
     CONF_NAME,
     CONF_PLAYER,
     CONF_TTS,
@@ -137,6 +139,50 @@ async def test_queue_provider_normalizes_current_and_next_tracks(
     ]
     call: ServiceCall = get_queue.await_args.args[0]
     assert call.data == {"entity_id": "media_player.living_room_streamer_2"}
+
+
+@pytest.mark.asyncio
+async def test_feedreader_provider_normalizes_latest_event(
+    hass: HomeAssistant,
+) -> None:
+    """Feedreader event data becomes compact local-news context."""
+    hass.states.async_set(
+        "event.san_diego_news",
+        "2026-07-31T12:00:00+00:00",
+        {
+            "event_type": "feedreader",
+            "event_data": {
+                "title": "San Diego council approves new park",
+                "description": "  A local update with   extra whitespace.  ",
+                "link": "https://example.test/news",
+            },
+        },
+    )
+
+    items = await FeedreaderEventProvider(hass, "event.san_diego_news").async_collect()
+
+    assert items == [
+        BriefingItem(
+            provider="feedreader",
+            title="San Diego council approves new park",
+            summary=(
+                "Latest local news: San Diego council approves new park. "
+                "A local update with extra whitespace."
+            ),
+            occurred_at=items[0].occurred_at,
+            source="https://example.test/news",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_feedreader_provider_skips_missing_or_empty_event(
+    hass: HomeAssistant,
+) -> None:
+    """A missing or empty feed entity is an optional-provider no-op."""
+    assert await FeedreaderEventProvider(hass, "event.missing").async_collect() == []
+    hass.states.async_set("event.empty_feed", "unknown", {"event_type": "feedreader"})
+    assert await FeedreaderEventProvider(hass, "event.empty_feed").async_collect() == []
 
 
 @pytest.mark.asyncio

@@ -72,6 +72,53 @@ class WeatherEntityProvider:
 
 
 @dataclass(frozen=True, slots=True)
+class FeedreaderEventProvider:
+    """Expose the latest Feedreader event entity as a briefing fact."""
+
+    hass: HomeAssistant
+    entity_id: str
+    name: str = "feedreader"
+
+    async def async_collect(self) -> list[BriefingItem]:
+        """Return the latest feed item when the event entity is available."""
+        state = self.hass.states.get(self.entity_id)
+        if state is None:
+            return []
+
+        event_data = state.attributes.get("event_data")
+        if not isinstance(event_data, dict):
+            event_data = state.attributes
+
+        title = event_data.get("title") or event_data.get("name")
+        if not isinstance(title, str) or not title.strip():
+            return []
+
+        description = (
+            event_data.get("description")
+            or event_data.get("summary")
+            or event_data.get("content")
+            or ""
+        )
+        if not isinstance(description, str):
+            description = str(description)
+        description = " ".join(description.split())[:600]
+        summary = f"Latest local news: {title.strip()}"
+        if description:
+            summary = f"{summary}. {description}"
+
+        link = event_data.get("link")
+        return [
+            BriefingItem(
+                provider=self.name,
+                title=title.strip(),
+                summary=summary,
+                occurred_at=state.last_updated,
+                source=link if isinstance(link, str) else self.entity_id,
+            )
+        ]
+
+
+@dataclass(frozen=True, slots=True)
 class EntityStateProvider:
     """Expose selected Home Assistant entity states as briefing facts."""
 
