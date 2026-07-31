@@ -191,7 +191,18 @@ class AiDjRuntime:
         if self._announcement_unsub is not None:
             self._announcement_unsub()
             self._announcement_unsub = None
-        self.hass.async_create_task(self.async_announce(message))
+        self.hass.async_create_task(self._async_deliver_announcement(message))
+
+    async def _async_deliver_announcement(self, message: str) -> None:
+        """Deliver a boundary announcement without leaking task failures."""
+        try:
+            await self.async_announce(message)
+        except Exception:  # noqa: BLE001 - background delivery must be isolated
+            _LOGGER.exception(
+                "Boundary announcement failed for AI DJ station %s on %s",
+                self.name,
+                self.player_entity_id,
+            )
 
     @callback
     def async_unload(self) -> None:

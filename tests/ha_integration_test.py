@@ -375,6 +375,43 @@ async def test_announce_next_waits_for_a_different_playing_track(
 
 
 @pytest.mark.asyncio
+async def test_announce_next_isolates_tts_delivery_failure(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A TTS failure at the boundary is logged, not leaked from a task."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+        },
+    )
+    entry.add_to_hass(hass)
+    player = "media_player.living_room_streamer_2"
+    _set_playing_track(hass, player, "library://track/current", "Current")
+    hass.states.async_set("tts.openai_tts", STATE_IDLE)
+    tts_speak = AsyncMock(side_effect=RuntimeError("speaker unavailable"))
+    hass.services.async_register("tts", "speak", tts_speak)
+    assert await aidj.async_setup(hass, {})
+    assert await aidj.async_setup_entry(hass, entry)
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_ANNOUNCE_NEXT,
+        {ATTR_MESSAGE: "This will fail safely."},
+        blocking=True,
+    )
+    _set_playing_track(hass, player, "library://track/next", "Next")
+    await hass.async_block_till_done()
+
+    tts_speak.assert_awaited_once()
+    assert "Boundary announcement failed" in caplog.text
+    assert "Living Room Radio" in caplog.text
+    assert "media_player.living_room_streamer_2" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_announce_next_is_cancelled_when_entry_unloads(
     hass: HomeAssistant,
 ) -> None:
