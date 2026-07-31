@@ -96,6 +96,61 @@ class EntityStateProvider:
 
 
 @dataclass(frozen=True, slots=True)
+class QueueProvider:
+    """Expose current and next Music Assistant queue items through HA."""
+
+    hass: HomeAssistant
+    player_entity_id: str
+    name: str = "music_assistant_queue"
+
+    async def async_collect(self) -> list[BriefingItem]:
+        """Return current/next queue facts without mutating playback."""
+        response = await self.hass.services.async_call(
+            "music_assistant",
+            "get_queue",
+            target={"entity_id": self.player_entity_id},
+            blocking=True,
+            return_response=True,
+        )
+        if not isinstance(response, dict):
+            return []
+        queue_data = response.get("service_response", response)
+        if not isinstance(queue_data, dict):
+            return []
+        player_queue = queue_data.get(self.player_entity_id)
+        if not isinstance(player_queue, dict):
+            return []
+
+        items: list[BriefingItem] = []
+        for label, key in (("Now playing", "current_item"), ("Up next", "next_item")):
+            item = player_queue.get(key)
+            if not isinstance(item, dict):
+                continue
+            media_item = item.get("media_item")
+            if not isinstance(media_item, dict):
+                continue
+            title = media_item.get("name") or item.get("name")
+            if not isinstance(title, str) or not title.strip():
+                continue
+            artists = media_item.get("artists", [])
+            artist_names = [
+                artist.get("name")
+                for artist in artists
+                if isinstance(artist, dict) and isinstance(artist.get("name"), str)
+            ]
+            artist_text = f" by {', '.join(artist_names)}" if artist_names else ""
+            items.append(
+                BriefingItem(
+                    provider=self.name,
+                    title=label,
+                    summary=f"{label}: {title}{artist_text}",
+                    source=media_item.get("uri") if isinstance(media_item.get("uri"), str) else None,
+                )
+            )
+        return items
+
+
+@dataclass(frozen=True, slots=True)
 class HaConversationBriefingGenerator:
     """Generate validated briefing text through HA's conversation service."""
 

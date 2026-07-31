@@ -15,6 +15,7 @@ from custom_components.aidj.briefing import (
     BriefingItem,
     EntityStateProvider,
     HaConversationBriefingGenerator,
+    QueueProvider,
     WeatherEntityProvider,
     async_collect_briefing,
 )
@@ -88,6 +89,52 @@ async def test_weather_provider_normalizes_common_weather_attributes(
         "humidity: 46%, wind: 7.15mph"
     )
     assert items[0].source == "weather.forecast_home"
+
+
+@pytest.mark.asyncio
+async def test_queue_provider_normalizes_current_and_next_tracks(
+    hass: HomeAssistant,
+) -> None:
+    """Queue context includes only current and next media facts."""
+    get_queue = AsyncMock(
+        return_value={
+            "service_response": {
+                "media_player.living_room_streamer_2": {
+                    "current_item": {
+                        "media_item": {
+                            "uri": "library://track/current",
+                            "name": "Current Song",
+                            "artists": [{"name": "Current Artist"}],
+                        }
+                    },
+                    "next_item": {
+                        "media_item": {
+                            "uri": "library://track/next",
+                            "name": "Next Song",
+                            "artists": [{"name": "Next Artist"}],
+                        }
+                    },
+                }
+            }
+        }
+    )
+    hass.services.async_register(
+        "music_assistant",
+        "get_queue",
+        get_queue,
+        supports_response=SupportsResponse.ONLY,
+    )
+
+    items = await QueueProvider(
+        hass, "media_player.living_room_streamer_2"
+    ).async_collect()
+
+    assert [(item.title, item.summary, item.source) for item in items] == [
+        ("Now playing", "Now playing: Current Song by Current Artist", "library://track/current"),
+        ("Up next", "Up next: Next Song by Next Artist", "library://track/next"),
+    ]
+    call: ServiceCall = get_queue.await_args.args[0]
+    assert call.data == {"entity_id": "media_player.living_room_streamer_2"}
 
 
 @pytest.mark.asyncio
