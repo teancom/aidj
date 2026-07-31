@@ -14,6 +14,7 @@ from custom_components import aidj
 from custom_components.aidj.briefing import (
     BriefingItem,
     EntityStateProvider,
+    HaConversationBriefingGenerator,
     WeatherEntityProvider,
     async_collect_briefing,
 )
@@ -85,6 +86,55 @@ async def test_weather_provider_normalizes_common_weather_attributes(
         "humidity: 46%, wind: 7.15mph"
     )
     assert items[0].source == "weather.forecast_home"
+
+
+@pytest.mark.asyncio
+async def test_conversation_generator_extracts_plain_speech(
+    hass: HomeAssistant,
+) -> None:
+    """The generator calls HA's response-capable conversation action."""
+    conversation = AsyncMock(
+        return_value={
+            "response": {
+                "speech": {"plain": {"speech": "  A concise briefing.  "}}
+            }
+        }
+    )
+    hass.services.async_register(
+        "conversation",
+        "process",
+        conversation,
+        supports_response=SupportsResponse.ONLY,
+    )
+
+    generator = HaConversationBriefingGenerator(hass, "conversation.openai_conversation")
+    result = await generator.async_generate("  Summarize the facts.  ")
+
+    assert result == "A concise briefing."
+    call: ServiceCall = conversation.await_args.args[0]
+    assert call.data == {
+        "text": "Summarize the facts.",
+        "agent_id": "conversation.openai_conversation",
+    }
+
+
+@pytest.mark.asyncio
+async def test_conversation_generator_rejects_empty_speech(
+    hass: HomeAssistant,
+) -> None:
+    """Malformed provider output cannot become spoken content."""
+    conversation = AsyncMock(return_value={"response": {"speech": {}}})
+    hass.services.async_register(
+        "conversation",
+        "process",
+        conversation,
+        supports_response=SupportsResponse.ONLY,
+    )
+
+    generator = HaConversationBriefingGenerator(hass, "conversation.openai_conversation")
+
+    with pytest.raises(Exception, match="returned no plain speech"):
+        await generator.async_generate("Summarize the facts.")
 
 
 @pytest.mark.asyncio

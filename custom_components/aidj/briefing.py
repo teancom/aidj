@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Protocol
 
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +93,48 @@ class EntityStateProvider:
                 )
             )
         return items
+
+
+@dataclass(frozen=True, slots=True)
+class HaConversationBriefingGenerator:
+    """Generate validated briefing text through HA's conversation service."""
+
+    hass: HomeAssistant
+    agent_id: str
+    name: str = "home_assistant_conversation"
+
+    async def async_generate(self, prompt: str) -> str:
+        """Ask HA's configured conversation agent for plain speech."""
+        prompt = prompt.strip()
+        if not prompt:
+            raise ServiceValidationError("The briefing prompt must not be empty")
+
+        try:
+            response = await self.hass.services.async_call(
+                "conversation",
+                "process",
+                {"text": prompt, "agent_id": self.agent_id},
+                blocking=True,
+                return_response=True,
+            )
+        except Exception as err:
+            raise HomeAssistantError(
+                f"Unable to generate a briefing with {self.agent_id}: {err}"
+            ) from err
+
+        speech = (
+            response.get("response", {})
+            .get("speech", {})
+            .get("plain", {})
+            .get("speech")
+            if isinstance(response, dict)
+            else None
+        )
+        if not isinstance(speech, str) or not speech.strip():
+            raise HomeAssistantError(
+                f"The conversation agent {self.agent_id} returned no plain speech"
+            )
+        return speech.strip()
 
 
 async def async_collect_briefing(
