@@ -14,6 +14,7 @@ from custom_components import aidj
 from custom_components.aidj.briefing import (
     BriefingItem,
     EntityStateProvider,
+    WeatherEntityProvider,
     async_collect_briefing,
 )
 from custom_components.aidj.const import (
@@ -56,6 +57,34 @@ async def test_entity_state_provider_normalizes_existing_entities(
             source="sensor.weather_temperature",
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_weather_provider_normalizes_common_weather_attributes(
+    hass: HomeAssistant,
+) -> None:
+    """Weather facts retain useful units while staying provider-neutral."""
+    hass.states.async_set(
+        "weather.forecast_home",
+        "sunny",
+        {
+            "friendly_name": "Forecast Home",
+            "temperature": 89,
+            "temperature_unit": "°F",
+            "humidity": 46,
+            "wind_speed": 7.15,
+            "wind_speed_unit": "mph",
+        },
+    )
+
+    items = await WeatherEntityProvider(hass, "weather.forecast_home").async_collect()
+
+    assert len(items) == 1
+    assert items[0].summary == (
+        "Forecast Home: conditions: sunny, temperature: 89°F, "
+        "humidity: 46%, wind: 7.15mph"
+    )
+    assert items[0].source == "weather.forecast_home"
 
 
 @pytest.mark.asyncio

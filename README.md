@@ -54,7 +54,7 @@ data:
 
 ### Briefing providers
 
-The internal `briefing.py` module normalizes source facts as `BriefingItem` values. Providers implement `async_collect()`, and `async_collect_briefing()` keeps successful providers' items when another optional provider fails. `EntityStateProvider` currently exposes explicitly selected Home Assistant entities; weather, Feedreader, and AI generation will be layered on this seam in later milestones.
+The internal `briefing.py` module normalizes source facts as `BriefingItem` values. Providers implement `async_collect()`, and `async_collect_briefing()` keeps successful providers' items when another optional provider fails. `EntityStateProvider` exposes explicitly selected Home Assistant entities, and `WeatherEntityProvider` turns a configured HA weather entity into a compact conditions/temperature/humidity/wind fact. The current installation has `weather.forecast_home`; no Feedreader entity is present yet, so news remains a later provider rather than a guessed or empty integration.
 
 ### Queue control
 

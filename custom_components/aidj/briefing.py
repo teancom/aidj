@@ -30,6 +30,43 @@ class BriefingProvider(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class WeatherEntityProvider:
+    """Expose the current state of one Home Assistant weather entity."""
+
+    hass: HomeAssistant
+    entity_id: str
+    name: str = "weather"
+
+    async def async_collect(self) -> list[BriefingItem]:
+        """Return one compact weather fact when the entity is available."""
+        state = self.hass.states.get(self.entity_id)
+        if state is None:
+            return []
+
+        attributes = state.attributes
+        friendly_name = attributes.get("friendly_name", self.entity_id)
+        details = [f"conditions: {state.state}"]
+        if (temperature := attributes.get("temperature")) is not None:
+            unit = attributes.get("temperature_unit", "")
+            details.append(f"temperature: {temperature}{unit}")
+        if (humidity := attributes.get("humidity")) is not None:
+            details.append(f"humidity: {humidity}%")
+        if (wind_speed := attributes.get("wind_speed")) is not None:
+            unit = attributes.get("wind_speed_unit", "")
+            details.append(f"wind: {wind_speed}{unit}")
+
+        return [
+            BriefingItem(
+                provider=self.name,
+                title=str(friendly_name),
+                summary=f"{friendly_name}: {', '.join(details)}",
+                occurred_at=state.last_updated,
+                source=self.entity_id,
+            )
+        ]
+
+
+@dataclass(frozen=True, slots=True)
 class EntityStateProvider:
     """Expose selected Home Assistant entity states as briefing facts."""
 
