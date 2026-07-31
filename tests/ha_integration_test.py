@@ -11,6 +11,11 @@ from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components import aidj
+from custom_components.aidj.briefing import (
+    BriefingItem,
+    EntityStateProvider,
+    async_collect_briefing,
+)
 from custom_components.aidj.const import (
     ATTR_MESSAGE,
     CONF_NAME,
@@ -23,6 +28,58 @@ from custom_components.aidj.const import (
     SERVICE_START,
     SERVICE_STOP,
 )
+
+
+@pytest.mark.asyncio
+async def test_entity_state_provider_normalizes_existing_entities(
+    hass: HomeAssistant,
+) -> None:
+    """The HA provider emits stable facts and skips missing entities."""
+    hass.states.async_set(
+        "sensor.weather_temperature",
+        "23",
+        {"friendly_name": "Outdoor Temperature", "unit_of_measurement": "°F"},
+    )
+    provider = EntityStateProvider(
+        hass,
+        ("sensor.weather_temperature", "sensor.missing"),
+    )
+
+    items = await provider.async_collect()
+
+    assert items == [
+        BriefingItem(
+            provider="home_assistant",
+            title="Outdoor Temperature",
+            summary="Outdoor Temperature: 23",
+            occurred_at=items[0].occurred_at,
+            source="sensor.weather_temperature",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_briefing_collection_isolates_provider_failures(
+    hass: HomeAssistant,
+) -> None:
+    """One failed optional provider does not discard successful facts."""
+    class FailingProvider:
+        name = "broken"
+
+        async def async_collect(self) -> list[BriefingItem]:
+            raise RuntimeError("feed unavailable")
+
+    hass.states.async_set("sensor.temperature", "70")
+    items, errors = await async_collect_briefing(
+        (
+            EntityStateProvider(hass, ("sensor.temperature",)),
+            FailingProvider(),
+        )
+    )
+
+    assert len(items) == 1
+    assert items[0].source == "sensor.temperature"
+    assert errors == {"broken": "feed unavailable"}
 
 
 @pytest.mark.asyncio
