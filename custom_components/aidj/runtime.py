@@ -37,6 +37,34 @@ class AiDjRuntime:
         """Return the configured TTS entity."""
         return self.settings[CONF_TTS]
 
+    async def async_start(self) -> None:
+        """Resume playback on the configured media player."""
+        await self._async_call_player_service("media_play")
+
+    async def async_stop(self) -> None:
+        """Stop playback on the configured media player."""
+        await self._async_call_player_service("media_stop")
+
+    async def _async_call_player_service(self, service: str) -> None:
+        """Call a media-player service for this station's configured player."""
+        player = self.hass.states.get(self.player_entity_id)
+        if player is None:
+            raise ServiceValidationError(
+                f"Configured media player does not exist: {self.player_entity_id}"
+            )
+
+        try:
+            await self.hass.services.async_call(
+                "media_player",
+                service,
+                target={"entity_id": self.player_entity_id},
+                blocking=True,
+            )
+        except Exception as err:
+            raise HomeAssistantError(
+                f"Unable to call media_player.{service} on {self.player_entity_id}: {err}"
+            ) from err
+
     async def async_announce(self, message: str) -> None:
         """Speak a one-shot message on the configured media player."""
         message = message.strip()

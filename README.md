@@ -20,6 +20,8 @@ Milestone 1 provides:
 
 - UI-based config flow for one AI DJ station.
 - Options flow for changing the station name, player, and TTS entity.
+- `aidj.start`, which resumes playback on the configured media player.
+- `aidj.stop`, which stops playback on the configured media player.
 - `aidj.announce`, which sends a supplied message to the configured TTS entity and media player.
 
 Milestone 1 intentionally supports one station per Home Assistant instance. The optional `config_entry_id` field is reserved for the future multi-station configuration and is not needed yet.

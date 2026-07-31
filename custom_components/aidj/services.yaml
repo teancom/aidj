@@ -1,3 +1,25 @@
+start:
+  name: Start
+  description: Resume playback on the configured media player.
+  fields:
+    config_entry_id:
+      name: Config entry ID
+      description: Reserved for future multi-station support; omit this field in milestone 2.
+      required: false
+      example: 01J...
+      selector:
+        text:
+stop:
+  name: Stop
+  description: Stop playback on the configured media player.
+  fields:
+    config_entry_id:
+      name: Config entry ID
+      description: Reserved for future multi-station support; omit this field in milestone 2.
+      required: false
+      example: 01J...
+      selector:
+        text:
 announce:
   name: Announce
   description: Speak a one-shot DJ announcement on the configured player.

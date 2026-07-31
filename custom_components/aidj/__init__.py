@@ -10,7 +10,14 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 
-from .const import ATTR_MESSAGE, CONF_CONFIG_ENTRY_ID, DOMAIN, SERVICE_ANNOUNCE
+from .const import (
+    ATTR_MESSAGE,
+    CONF_CONFIG_ENTRY_ID,
+    DOMAIN,
+    SERVICE_ANNOUNCE,
+    SERVICE_START,
+    SERVICE_STOP,
+)
 from .runtime import AiDjRuntime
 
 SERVICE_ANNOUNCE_SCHEMA = vol.Schema(
@@ -18,6 +25,9 @@ SERVICE_ANNOUNCE_SCHEMA = vol.Schema(
         vol.Required(ATTR_MESSAGE): cv.string,
         vol.Optional(CONF_CONFIG_ENTRY_ID): cv.string,
     }
+)
+SERVICE_PLAYER_SCHEMA = vol.Schema(
+    {vol.Optional(CONF_CONFIG_ENTRY_ID): cv.string}
 )
 
 
@@ -46,11 +56,33 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
         runtime = _get_runtime(hass, call.data.get(CONF_CONFIG_ENTRY_ID))
         await runtime.async_announce(call.data[ATTR_MESSAGE])
 
+    async def async_handle_start(call: ServiceCall) -> None:
+        """Handle the aidj.start service."""
+        runtime = _get_runtime(hass, call.data.get(CONF_CONFIG_ENTRY_ID))
+        await runtime.async_start()
+
+    async def async_handle_stop(call: ServiceCall) -> None:
+        """Handle the aidj.stop service."""
+        runtime = _get_runtime(hass, call.data.get(CONF_CONFIG_ENTRY_ID))
+        await runtime.async_stop()
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_ANNOUNCE,
         async_handle_announce,
         schema=SERVICE_ANNOUNCE_SCHEMA,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_START,
+        async_handle_start,
+        schema=SERVICE_PLAYER_SCHEMA,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_STOP,
+        async_handle_stop,
+        schema=SERVICE_PLAYER_SCHEMA,
     )
     return True
 

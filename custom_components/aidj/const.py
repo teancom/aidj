@@ -4,6 +4,8 @@ from typing import Final
 
 DOMAIN: Final = "aidj"
 SERVICE_ANNOUNCE: Final = "announce"
+SERVICE_START: Final = "start"
+SERVICE_STOP: Final = "stop"
 
 CONF_NAME: Final = "name"
 CONF_PLAYER: Final = "player"
