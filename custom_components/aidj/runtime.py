@@ -11,11 +11,13 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 from .briefing import (
     BriefingItem,
+    FeedreaderEventProvider,
     HaConversationBriefingGenerator,
+    QueueProvider,
     WeatherEntityProvider,
     async_collect_briefing,
 )
-from .const import CONF_AGENT, CONF_NAME, CONF_PLAYER, CONF_TTS, CONF_WEATHER
+from .const import CONF_AGENT, CONF_FEED, CONF_NAME, CONF_PLAYER, CONF_TTS, CONF_WEATHER
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -108,22 +110,37 @@ class AiDjRuntime:
                 "weather_entity_id and agent_id must not be empty"
             )
 
-        items, errors = await async_collect_briefing(
-            (WeatherEntityProvider(self.hass, weather_entity_id),)
-        )
+        feed_entity_id = self.settings.get(CONF_FEED, "").strip()
+        providers = [WeatherEntityProvider(self.hass, weather_entity_id)]
+        if feed_entity_id:
+            providers.append(FeedreaderEventProvider(self.hass, feed_entity_id))
+        providers.append(QueueProvider(self.hass, self.player_entity_id))
+
+        items, errors = await async_collect_briefing(tuple(providers))
+        weather_items = [item for item in items if item.provider == "weather"]
         if errors:
-            raise HomeAssistantError(
-                f"Unable to collect briefing sources: {', '.join(errors.values())}"
+            _LOGGER.info(
+                "Optional briefing providers unavailable for station %s: %s",
+                self.name,
+                ", ".join(f"{name}: {error}" for name, error in errors.items()),
             )
-        if not items:
+        if not weather_items:
             _LOGGER.warning("Briefing weather entity is unavailable: %s", weather_entity_id)
             raise ServiceValidationError(
                 f"Weather entity does not exist: {weather_entity_id}"
             )
 
         facts = "\n".join(f"- {item.summary}" for item in items)
-        prompt = (prompt or "Write a concise, friendly radio DJ weather briefing.").strip()
-        full_prompt = f"{prompt}\n\nFacts:\n{facts}"
+        prompt = (
+            prompt
+            or "Write a concise, friendly radio DJ weather briefing."
+        ).strip()
+        full_prompt = (
+            f"{prompt}\n"
+            "Use only the supplied facts. Preserve local-news headlines exactly "
+            "as written; do not invent, embellish, or substitute news details.\n\n"
+            f"Facts:\n{facts}"
+        )
         return await HaConversationBriefingGenerator(self.hass, agent_id).async_generate(
             full_prompt
         )

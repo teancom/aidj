@@ -2,7 +2,7 @@
 
 AI DJ is a Home Assistant custom integration for queue-aware, AI-generated DJ presentation around Music Assistant playback.
 
-The project is currently in an early milestone. The first release provides a config-entry setup flow and a one-shot `aidj.announce` action. Playback orchestration, Music Assistant queue integration, weather, feed-backed news, and AI briefings will be added incrementally.
+The project is currently in an early milestone. The first release provides a config-entry setup flow and a one-shot `aidj.announce` action. Playback orchestration, Music Assistant queue integration, weather, local feed-backed news, and AI briefings are being added incrementally.
 
 ## Install for development
 
@@ -56,7 +56,7 @@ data:
 
 ### Briefing providers
 
-The internal `briefing.py` module normalizes source facts as `BriefingItem` values. Providers implement `async_collect()`, and `async_collect_briefing()` keeps successful providers' items when another optional provider fails. `EntityStateProvider` exposes explicitly selected Home Assistant entities, and `WeatherEntityProvider` turns a configured HA weather entity into a compact conditions/temperature/humidity/wind fact. The current installation has `weather.forecast_home`; no Feedreader/RSS/news or calendar entities are present, so those remain later providers rather than guessed or empty integrations. `QueueProvider` reads the configured Music Assistant queue through HA and exposes current/up-next track facts without mutation. `HaConversationBriefingGenerator` can ask a configured HA conversation agent (currently `conversation.openai_conversation`) for plain speech through `conversation.process`; it validates the response and stores no AI credentials in AI DJ. The response-only `aidj.briefing` action combines weather facts with this generator and returns `{text: ...}`. It does not call TTS, start/stop playback, or modify the Music Assistant queue.
+The internal `briefing.py` module normalizes source facts as `BriefingItem` values. Providers implement `async_collect()`, and `async_collect_briefing()` keeps successful providers' items when another optional provider fails. `EntityStateProvider` exposes explicitly selected Home Assistant entities, and `WeatherEntityProvider` turns a configured HA weather entity into a compact conditions/temperature/humidity/wind fact. `FeedreaderEventProvider` consumes the latest item from a configured Home Assistant Feedreader event entity. The live installation uses Voice of San Diego's official RSS feed (`https://voiceofsandiego.org/feed/`) as `event.voice_of_san_diego`; the San Diego Union-Tribune feed was rejected by its parser because its endpoint returned no feed title. `QueueProvider` reads the configured Music Assistant queue through HA and exposes current/up-next track facts without mutation. Weather is required; feed and queue context are optional and logged when unavailable. `HaConversationBriefingGenerator` can ask a configured HA conversation agent (currently `conversation.openai_conversation`) for plain speech through `conversation.process`; it validates the response and stores no AI credentials in AI DJ. The response-only `aidj.briefing` action combines these facts with the generator and returns `{text: ...}`. It does not call TTS, start/stop playback, or modify the Music Assistant queue. Prompts should tell the agent to preserve feed headlines as supplied facts rather than inventing or embellishing details.
 
 ### Queue control
 
