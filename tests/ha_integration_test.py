@@ -127,7 +127,14 @@ async def test_queue_add_uses_music_assistant_without_replacing_queue(
     hass.states.async_set("media_player.living_room_streamer_2", STATE_IDLE)
 
     play_media = AsyncMock()
+    get_queue = AsyncMock(return_value={"media_player.living_room_streamer_2": {}})
     hass.services.async_register("music_assistant", "play_media", play_media)
+    hass.services.async_register(
+        "music_assistant",
+        "get_queue",
+        get_queue,
+        supports_response=SupportsResponse.ONLY,
+    )
     assert await aidj.async_setup(hass, {})
     assert await aidj.async_setup_entry(hass, entry)
 
@@ -135,6 +142,12 @@ async def test_queue_add_uses_music_assistant_without_replacing_queue(
         DOMAIN,
         SERVICE_QUEUE_ADD,
         {"media_id": "  spotify://track/example  "},
+        blocking=True,
+    )
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_QUEUE_ADD,
+        {"media_id": "spotify://track/example"},
         blocking=True,
     )
 
@@ -145,6 +158,57 @@ async def test_queue_add_uses_music_assistant_without_replacing_queue(
         "enqueue": "add",
         "entity_id": "media_player.living_room_streamer_2",
     }
+    get_queue.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_queue_add_skips_media_already_in_current_or_next_item(
+    hass: HomeAssistant,
+) -> None:
+    """Existing current/next media is not appended again."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+        },
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set("media_player.living_room_streamer_2", STATE_IDLE)
+
+    play_media = AsyncMock()
+    get_queue = AsyncMock(
+        return_value={
+            "service_response": {
+                "media_player.living_room_streamer_2": {
+                    "current_item": {
+                        "media_item": {"uri": "library://track/current"}
+                    },
+                    "next_item": {"media_item": {"uri": "library://track/next"}},
+                }
+            }
+        }
+    )
+    hass.services.async_register("music_assistant", "play_media", play_media)
+    hass.services.async_register(
+        "music_assistant",
+        "get_queue",
+        get_queue,
+        supports_response=SupportsResponse.ONLY,
+    )
+    assert await aidj.async_setup(hass, {})
+    assert await aidj.async_setup_entry(hass, entry)
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_QUEUE_ADD,
+        {"media_id": "library://track/next"},
+        blocking=True,
+    )
+
+    play_media.assert_not_awaited()
+    get_queue.assert_awaited_once()
 
 
 @pytest.mark.asyncio

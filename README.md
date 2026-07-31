@@ -48,7 +48,7 @@ data:
   media_id: spotify://track/example
 ```
 
-This delegates to `music_assistant.play_media` with `enqueue: add`, so the existing queue is preserved. Queue inspection is implemented through `music_assistant.get_queue` and will be used by later orchestration milestones.
+This delegates to `music_assistant.play_media` with `enqueue: add`, so the existing queue is preserved. Before adding, AI DJ reads `music_assistant.get_queue` and skips media already in the current or next item. Successfully added IDs are also remembered for the lifetime of the station runtime, preventing repeated calls from appending duplicates.
 
 ## Design goals
 
