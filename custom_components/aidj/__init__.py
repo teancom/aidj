@@ -18,6 +18,7 @@ from .const import (
     SERVICE_ANNOUNCE,
     SERVICE_ANNOUNCE_NEXT,
     SERVICE_BRIEFING,
+    SERVICE_BRIEFING_NEXT,
     SERVICE_QUEUE_ADD,
     SERVICE_START,
     SERVICE_STOP,
@@ -89,6 +90,15 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
         )
         return {"text": text}
 
+    async def async_handle_briefing_next(call: ServiceCall) -> None:
+        """Handle the aidj.briefing_next service."""
+        runtime = _get_runtime(hass, call.data.get(CONF_CONFIG_ENTRY_ID))
+        await runtime.async_briefing_next(
+            call.data["weather_entity_id"],
+            call.data["agent_id"],
+            call.data.get("prompt"),
+        )
+
     async def async_handle_start(call: ServiceCall) -> None:
         """Handle the aidj.start service."""
         runtime = _get_runtime(hass, call.data.get(CONF_CONFIG_ENTRY_ID))
@@ -122,6 +132,12 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
         async_handle_briefing,
         schema=SERVICE_BRIEFING_SCHEMA,
         supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_BRIEFING_NEXT,
+        async_handle_briefing_next,
+        schema=SERVICE_BRIEFING_SCHEMA,
     )
     hass.services.async_register(
         DOMAIN,

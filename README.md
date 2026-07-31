@@ -28,6 +28,7 @@ Milestone 1 provides:
 - An internal queue-read adapter using Home Assistant's response-capable `music_assistant.get_queue` action.
 - A provider-neutral briefing layer with a Home Assistant entity-state provider and per-provider failure isolation.
 - `aidj.briefing`, a response-only preparation action that collects a selected weather entity and asks a selected HA conversation agent for text without speaking or changing playback.
+- `aidj.briefing_next`, which performs the same generation and arms the validated track-boundary announcement path without speaking immediately.
 
 Milestone 1 intentionally supports one station per Home Assistant instance. The optional `config_entry_id` field is reserved for the future multi-station configuration and is not needed yet.
 
@@ -51,7 +52,7 @@ data:
   message: "Coming up next on Escondido Smart Home Radio"
 ```
 
-`announce_next` requires the configured player to be playing an identifiable track when it is armed. It listens only for state changes on that player, ignores pauses/stops and same-track updates, and speaks once after a different track enters `playing`. A pending listener is cancelled when the integration entry unloads or reloads.
+`announce_next` requires the configured player to be playing an identifiable track when it is armed. It listens only for state changes on that player, ignores pauses/stops and same-track updates, and speaks once after a different track enters `playing`. A pending listener is cancelled when the integration entry unloads or reloads. `briefing_next` generates the text before arming this listener, so a failed or empty AI response cannot leave a delayed announcement behind.
 
 ### Briefing providers
 

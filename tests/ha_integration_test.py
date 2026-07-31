@@ -28,6 +28,7 @@ from custom_components.aidj.const import (
     SERVICE_ANNOUNCE,
     SERVICE_ANNOUNCE_NEXT,
     SERVICE_BRIEFING,
+    SERVICE_BRIEFING_NEXT,
     SERVICE_START,
     SERVICE_STOP,
 )
@@ -568,6 +569,114 @@ async def test_briefing_service_rejects_missing_weather_entity(
             return_response=True,
         )
     conversation.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_briefing_next_generates_and_arms_without_immediate_tts(
+    hass: HomeAssistant,
+) -> None:
+    """Generated briefings wait for a track transition before speaking."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+        },
+    )
+    entry.add_to_hass(hass)
+    player = "media_player.living_room_streamer_2"
+    _set_playing_track(hass, player, "library://track/current", "Current")
+    hass.states.async_set(
+        "weather.forecast_home",
+        "sunny",
+        {"friendly_name": "Forecast Home", "temperature": 89, "temperature_unit": "°F"},
+    )
+    hass.states.async_set("tts.openai_tts", STATE_IDLE)
+    conversation = AsyncMock(
+        return_value={
+            "response": {
+                "speech": {"plain": {"speech": "Sunny and warm."}}
+            }
+        }
+    )
+    tts_speak = AsyncMock()
+    hass.services.async_register(
+        "conversation",
+        "process",
+        conversation,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register("tts", "speak", tts_speak)
+    assert await aidj.async_setup(hass, {})
+    assert await aidj.async_setup_entry(hass, entry)
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_BRIEFING_NEXT,
+        {
+            "weather_entity_id": "weather.forecast_home",
+            "agent_id": "conversation.openai_conversation",
+        },
+        blocking=True,
+    )
+    tts_speak.assert_not_awaited()
+
+    _set_playing_track(hass, player, "library://track/next", "Next")
+    await hass.async_block_till_done()
+
+    tts_speak.assert_awaited_once()
+    assert tts_speak.await_args.args[0].data[ATTR_MESSAGE] == "Sunny and warm."
+
+
+@pytest.mark.asyncio
+async def test_briefing_next_does_not_arm_when_generation_fails(
+    hass: HomeAssistant,
+) -> None:
+    """Generation errors leave no pending boundary announcement."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+        },
+    )
+    entry.add_to_hass(hass)
+    player = "media_player.living_room_streamer_2"
+    _set_playing_track(hass, player, "library://track/current", "Current")
+    hass.states.async_set(
+        "weather.forecast_home",
+        "sunny",
+        {"friendly_name": "Forecast Home", "temperature": 89, "temperature_unit": "°F"},
+    )
+    conversation = AsyncMock(
+        return_value={"response": {"speech": {}}}
+    )
+    tts_speak = AsyncMock()
+    hass.services.async_register(
+        "conversation",
+        "process",
+        conversation,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register("tts", "speak", tts_speak)
+    assert await aidj.async_setup(hass, {})
+    assert await aidj.async_setup_entry(hass, entry)
+
+    with pytest.raises(Exception, match="returned no plain speech"):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_BRIEFING_NEXT,
+            {
+                "weather_entity_id": "weather.forecast_home",
+                "agent_id": "conversation.openai_conversation",
+            },
+            blocking=True,
+        )
+    _set_playing_track(hass, player, "library://track/next", "Next")
+    await hass.async_block_till_done()
+    tts_speak.assert_not_awaited()
 
 
 @pytest.mark.asyncio

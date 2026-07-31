@@ -123,6 +123,16 @@ class AiDjRuntime:
             full_prompt
         )
 
+    async def async_briefing_next(
+        self,
+        weather_entity_id: str,
+        agent_id: str,
+        prompt: str | None = None,
+    ) -> None:
+        """Generate a briefing and arm it for the next track boundary."""
+        message = await self.async_generate_briefing(weather_entity_id, agent_id, prompt)
+        await self.async_announce_next(message)
+
     async def async_start(self) -> None:
         """Resume playback on the configured media player."""
         await self._async_call_player_service("media_play")

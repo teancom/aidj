@@ -89,6 +89,39 @@ briefing:
       example: 01J...
       selector:
         text:
+briefing_next:
+  name: Briefing at next track
+  description: Generate a weather briefing and speak it after the next different track starts.
+  fields:
+    weather_entity_id:
+      name: Weather entity
+      description: The Home Assistant weather entity to summarize.
+      required: true
+      example: weather.forecast_home
+      selector:
+        entity:
+          domain: weather
+    agent_id:
+      name: Conversation agent
+      description: The Home Assistant conversation agent to generate the briefing.
+      required: true
+      example: conversation.openai_conversation
+      selector:
+        conversation_agent:
+    prompt:
+      name: Prompt
+      description: Optional instruction for the briefing style.
+      required: false
+      example: Write one concise sentence for radio.
+      selector:
+        text:
+    config_entry_id:
+      name: Config entry ID
+      description: Reserved for future multi-station support.
+      required: false
+      example: 01J...
+      selector:
+        text:
 announce_next:
   name: Announce at next track
   description: Queue an announcement for the next different track on the configured player.
