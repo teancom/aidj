@@ -8,6 +8,12 @@ from typing import Any
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
+from .briefing import (
+    BriefingItem,
+    HaConversationBriefingGenerator,
+    WeatherEntityProvider,
+    async_collect_briefing,
+)
 from .const import CONF_NAME, CONF_PLAYER, CONF_TTS
 
 
@@ -83,6 +89,39 @@ class AiDjRuntime:
     def tts_entity_id(self) -> str:
         """Return the configured TTS entity."""
         return self.settings[CONF_TTS]
+
+    async def async_generate_briefing(
+        self,
+        weather_entity_id: str,
+        agent_id: str,
+        prompt: str | None = None,
+    ) -> str:
+        """Collect weather and generate a briefing without playback side effects."""
+        weather_entity_id = weather_entity_id.strip()
+        agent_id = agent_id.strip()
+        if not weather_entity_id or not agent_id:
+            raise ServiceValidationError(
+                "weather_entity_id and agent_id must not be empty"
+            )
+
+        items, errors = await async_collect_briefing(
+            (WeatherEntityProvider(self.hass, weather_entity_id),)
+        )
+        if errors:
+            raise HomeAssistantError(
+                f"Unable to collect briefing sources: {', '.join(errors.values())}"
+            )
+        if not items:
+            raise ServiceValidationError(
+                f"Weather entity does not exist: {weather_entity_id}"
+            )
+
+        facts = "\n".join(f"- {item.summary}" for item in items)
+        prompt = (prompt or "Write a concise, friendly radio DJ weather briefing.").strip()
+        full_prompt = f"{prompt}\n\nFacts:\n{facts}"
+        return await HaConversationBriefingGenerator(self.hass, agent_id).async_generate(
+            full_prompt
+        )
 
     async def async_start(self) -> None:
         """Resume playback on the configured media player."""

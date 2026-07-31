@@ -5,6 +5,7 @@ from typing import Final
 DOMAIN: Final = "aidj"
 SERVICE_ANNOUNCE: Final = "announce"
 SERVICE_ANNOUNCE_NEXT: Final = "announce_next"
+SERVICE_BRIEFING: Final = "briefing"
 SERVICE_START: Final = "start"
 SERVICE_STOP: Final = "stop"
 SERVICE_QUEUE_ADD: Final = "queue_add"

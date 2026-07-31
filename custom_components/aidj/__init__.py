@@ -6,7 +6,7 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 
@@ -17,6 +17,7 @@ from .const import (
     ATTR_MEDIA_ID,
     SERVICE_ANNOUNCE,
     SERVICE_ANNOUNCE_NEXT,
+    SERVICE_BRIEFING,
     SERVICE_QUEUE_ADD,
     SERVICE_START,
     SERVICE_STOP,
@@ -35,6 +36,14 @@ SERVICE_PLAYER_SCHEMA = vol.Schema(
 SERVICE_QUEUE_ADD_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_MEDIA_ID): cv.string,
+        vol.Optional(CONF_CONFIG_ENTRY_ID): cv.string,
+    }
+)
+SERVICE_BRIEFING_SCHEMA = vol.Schema(
+    {
+        vol.Required("weather_entity_id"): cv.string,
+        vol.Required("agent_id"): cv.string,
+        vol.Optional("prompt"): cv.string,
         vol.Optional(CONF_CONFIG_ENTRY_ID): cv.string,
     }
 )
@@ -70,6 +79,16 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
         runtime = _get_runtime(hass, call.data.get(CONF_CONFIG_ENTRY_ID))
         await runtime.async_announce_next(call.data[ATTR_MESSAGE])
 
+    async def async_handle_briefing(call: ServiceCall) -> dict[str, str]:
+        """Handle the aidj.briefing service."""
+        runtime = _get_runtime(hass, call.data.get(CONF_CONFIG_ENTRY_ID))
+        text = await runtime.async_generate_briefing(
+            call.data["weather_entity_id"],
+            call.data["agent_id"],
+            call.data.get("prompt"),
+        )
+        return {"text": text}
+
     async def async_handle_start(call: ServiceCall) -> None:
         """Handle the aidj.start service."""
         runtime = _get_runtime(hass, call.data.get(CONF_CONFIG_ENTRY_ID))
@@ -96,6 +115,13 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
         SERVICE_ANNOUNCE_NEXT,
         async_handle_announce_next,
         schema=SERVICE_ANNOUNCE_SCHEMA,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_BRIEFING,
+        async_handle_briefing,
+        schema=SERVICE_BRIEFING_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
     )
     hass.services.async_register(
         DOMAIN,
