@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 from typing import Any
 
 from homeassistant.core import Event, HomeAssistant, callback
@@ -15,6 +16,9 @@ from .briefing import (
     async_collect_briefing,
 )
 from .const import CONF_NAME, CONF_PLAYER, CONF_TTS
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _track_identity(state: Any) -> str | None:
@@ -112,6 +116,7 @@ class AiDjRuntime:
                 f"Unable to collect briefing sources: {', '.join(errors.values())}"
             )
         if not items:
+            _LOGGER.warning("Briefing weather entity is unavailable: %s", weather_entity_id)
             raise ServiceValidationError(
                 f"Weather entity does not exist: {weather_entity_id}"
             )

@@ -4,10 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import logging
 from typing import Protocol
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +177,11 @@ class HaConversationBriefingGenerator:
                 return_response=True,
             )
         except Exception as err:
+            _LOGGER.warning(
+                "Briefing generation failed via conversation agent %s: %s",
+                self.agent_id,
+                err,
+            )
             raise HomeAssistantError(
                 f"Unable to generate a briefing with {self.agent_id}: {err}"
             ) from err
@@ -186,6 +195,10 @@ class HaConversationBriefingGenerator:
             else None
         )
         if not isinstance(speech, str) or not speech.strip():
+            _LOGGER.warning(
+                "Conversation agent %s returned no plain speech for briefing",
+                self.agent_id,
+            )
             raise HomeAssistantError(
                 f"The conversation agent {self.agent_id} returned no plain speech"
             )
@@ -202,5 +215,6 @@ async def async_collect_briefing(
         try:
             items.extend(await provider.async_collect())
         except Exception as err:  # noqa: BLE001 - providers are optional boundaries
+            _LOGGER.warning("Briefing provider %s failed: %s", provider.name, err)
             errors[provider.name] = str(err)
     return items, errors
