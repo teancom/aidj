@@ -19,6 +19,7 @@ from homeassistant.helpers.storage import Store
 
 from .music_assistant import HaTtsUrlRenderer, MusicAssistantClient, MusicAssistantQueueAdapter
 
+from .announcement import AnnouncementController
 from .briefing import BriefingItem, HaConversationBriefingGenerator
 from .briefing_assembly import async_collect_station_briefing
 from .const import (
@@ -42,16 +43,6 @@ from .story import record_story, select_feed_story
 
 
 _LOGGER = logging.getLogger(__name__)
-
-
-def _track_identity(state: Any) -> str | None:
-    """Return a stable identity for the currently playing media item."""
-    attributes = getattr(state, "attributes", {})
-    parts = tuple(
-        str(attributes.get(key, ""))
-        for key in ("media_content_id", "media_artist", "media_title")
-    )
-    return ":".join(parts) if any(parts) else None
 
 
 def queue_media_ids(queue: Any, player_entity_id: str) -> set[str]:
@@ -107,12 +98,19 @@ class AiDjRuntime:
     _schedule_unsub: Any = None
     _player_unsub: Any = None
     _preparing_boundary: str | None = None
-    _pending_announcement: tuple[str, str] | None = None
-    _announcement_unsub: Any = None
+    _announcement: AnnouncementController = field(init=False)
     _ma_client: MusicAssistantClient | None = None
     _ma_listener_task: Any = None
     _ma_queue: MusicAssistantQueueAdapter | None = None
     _ma_tts: HaTtsUrlRenderer | None = None
+
+    def __post_init__(self) -> None:
+        """Create the boundary announcement controller after dataclass init."""
+        self._announcement = AnnouncementController(
+            self.hass,
+            self.player_entity_id,
+            self._async_deliver_announcement,
+        )
 
     @property
     def settings(self) -> dict[str, Any]:
@@ -414,59 +412,8 @@ class AiDjRuntime:
 
     async def async_announce_next(self, message: str) -> None:
         """Speak a message when the configured player advances to another track."""
-        message = message.strip()
-        if not message:
-            raise ServiceValidationError("The announcement message must not be empty")
-
         self._require_player()
-        state = self.hass.states.get(self.player_entity_id)
-        if state is None:
-            raise ServiceValidationError(
-                f"Configured media player does not exist: {self.player_entity_id}"
-            )
-        if state.state != STATE_PLAYING:
-            raise ServiceValidationError(
-                "announce_next requires the configured media player to be playing"
-            )
-
-        baseline = _track_identity(state)
-        if baseline is None:
-            raise ServiceValidationError(
-                "The configured media player has no identifiable current track"
-            )
-
-        if self._announcement_unsub is not None:
-            self._announcement_unsub()
-        self._pending_announcement = (baseline, message)
-        self._announcement_unsub = event_helper.async_track_state_change_event(
-            self.hass,
-            self.player_entity_id,
-            self._async_handle_state_changed,
-        )
-
-    @callback
-    def _async_handle_state_changed(self, event: Event) -> None:
-        """Handle a configured-player track transition asynchronously."""
-        if self._pending_announcement is None:
-            return
-        data = event.data
-        if data.get("entity_id") != self.player_entity_id:
-            return
-
-        new_state = data.get("new_state")
-        if new_state is None or new_state.state != STATE_PLAYING:
-            return
-
-        baseline, message = self._pending_announcement
-        current = _track_identity(new_state)
-        if current is None or current == baseline:
-            return
-
-        self._pending_announcement = None
-        if self._announcement_unsub is not None:
-            self._announcement_unsub()
-            self._announcement_unsub = None
-        self.hass.async_create_task(self._async_deliver_announcement(message))
+        await self._announcement.async_arm(message)
 
     async def _async_deliver_announcement(self, message: str) -> None:
         """Deliver a boundary announcement without leaking task failures."""
@@ -482,16 +429,13 @@ class AiDjRuntime:
     @callback
     def async_unload(self) -> None:
         """Cancel listeners and stop native MA transport during unload."""
-        self._pending_announcement = None
+        self._announcement.async_cancel()
         if self._schedule_unsub is not None:
             self._schedule_unsub()
             self._schedule_unsub = None
         if self._player_unsub is not None:
             self._player_unsub()
             self._player_unsub = None
-        if self._announcement_unsub is not None:
-            self._announcement_unsub()
-            self._announcement_unsub = None
         if self._ma_listener_task is not None:
             self._ma_listener_task.cancel()
             self._ma_listener_task = None
