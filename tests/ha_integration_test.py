@@ -512,11 +512,11 @@ async def test_calendar_provider_collects_upcoming_timed_and_all_day_events(
             "calendar.david": {
                 "events": [
                     {
-                        "summary": "Dinner",
-                        "start": {"dateTime": "2026-08-01T19:00:00-07:00"},
-                        "end": {"dateTime": "2026-08-01T21:00:00-07:00"},
-                        "location": "Home",
-                        "uid": "dinner-1",
+                        "summary": "Spider-Man 🕷️🕸️",
+                        "start": {"dateTime": "2026-08-01T14:10:00-07:00"},
+                        "end": {"dateTime": "2026-08-01T16:45:00-07:00"},
+                        "location": "Angelika Film Center & Café - Carmel Mountain",
+                        "uid": "spider-man-1",
                     },
                     {
                         "summary": "Birthday",
@@ -537,12 +537,12 @@ async def test_calendar_provider_collects_upcoming_timed_and_all_day_events(
 
     items = await CalendarEventProvider(hass, "calendar.david").async_collect()
 
-    assert [item.title for item in items] == ["Dinner", "Birthday"]
-    assert "David & Beloved: Dinner" in items[0].summary
-    assert "starts 2026-08-01T19:00:00-07:00" in items[0].summary
-    assert "location: Home" in items[0].summary
+    assert [item.title for item in items] == ["Spider-Man 🕷️🕸️", "Birthday"]
+    assert "David & Beloved: Spider-Man 🕷️🕸️" in items[0].summary
+    assert "starts 2026-08-01T14:10:00-07:00" in items[0].summary
+    assert "location: Angelika Film Center & Café - Carmel Mountain" in items[0].summary
     assert "all day on 2026-08-02" in items[1].summary
-    assert items[0].identity == "calendar.david:dinner-1"
+    assert items[0].identity == "calendar.david:spider-man-1"
     call: ServiceCall = get_events.await_args.args[0]
     assert call.data["entity_id"] == "calendar.david"
     assert call.data["end_date_time"]

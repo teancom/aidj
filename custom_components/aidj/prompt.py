@@ -20,11 +20,15 @@ BRIEFING_STYLE_INSTRUCTIONS = (
     "specific references with generic phrases like 'that was great' or 'more great music'. "
     "The broader structured music context is optional flavor: do not mention every "
     "previous track or genre at every break, and only add those details when natural. "
+    "Treat the facts as a coherent briefing, not as an isolated checklist. When two or "
+    "more facts naturally relate—for example, an upcoming calendar event and the day's "
+    "weather—make a useful, human connection between them. It is fine to mention "
+    "several relevant facts in one break, and it is fine to leave out irrelevant facts. "
     "For local news, explain the development naturally in one or two conversational "
     "sentences; paraphrase the headline when that sounds better, and do not say "
     "'there is a headline' or 'in local news, there is a headline'. Do not read RSS "
     "boilerplate such as 'the post appeared first on'. Keep the facts accurate and "
-    "do not invent details."
+    "do not invent details or assume calendar details that are not supplied."
 )
 
 
