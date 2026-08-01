@@ -36,6 +36,7 @@ from .const import (
     CONF_PLAYER,
     CONF_TTS,
     CONF_WEATHER,
+    RECENT_STORY_LIMIT,
 )
 
 
@@ -93,6 +94,8 @@ class AiDjRuntime:
     entry: object
     _owned_media_ids: set[str] = field(default_factory=set)
     _owned_queue_items: dict[str, dict[str, str]] = field(default_factory=dict)
+    _recent_story_ids: list[str] = field(default_factory=list)
+    _selected_story_id: str | None = None
     _enabled: bool = False
     _store: Store[dict[str, Any]] | None = None
     _schedule_unsub: Any = None
@@ -142,6 +145,11 @@ class AiDjRuntime:
                 for item_id, metadata in stored_items.items()
                 if isinstance(metadata, dict)
             }
+        stored_story_ids = stored.get("recent_story_ids", [])
+        if isinstance(stored_story_ids, list):
+            self._recent_story_ids = [
+                str(story_id) for story_id in stored_story_ids if isinstance(story_id, str)
+            ][-RECENT_STORY_LIMIT:]
         self._schedule_unsub = event_helper.async_track_time_change(
             self.hass, self._async_handle_schedule, minute={25, 55}, second=0
         )
@@ -192,6 +200,41 @@ class AiDjRuntime:
             self.tts_entity_id,
         )
 
+    def _select_feed_story(self, items: list[BriefingItem]) -> BriefingItem | None:
+        """Choose an unseen feed story, or the least-recently-used available one."""
+        feed_items = [
+            item for item in items
+            if item.provider == "feedreader" and item.identity
+        ]
+        if not feed_items:
+            self._selected_story_id = None
+            return None
+        recent = set(self._recent_story_ids)
+        for item in feed_items:
+            if item.identity not in recent:
+                self._selected_story_id = item.identity
+                return item
+        oldest = min(
+            feed_items,
+            key=lambda item: self._recent_story_ids.index(item.identity)
+            if item.identity in self._recent_story_ids
+            else -1,
+        )
+        self._selected_story_id = oldest.identity
+        return oldest
+
+    def _record_selected_story(self) -> None:
+        """Commit the selected story after successful queue/arming."""
+        if self._selected_story_id is None:
+            return
+        self._recent_story_ids = [
+            story_id for story_id in self._recent_story_ids
+            if story_id != self._selected_story_id
+        ]
+        self._recent_story_ids.append(self._selected_story_id)
+        self._recent_story_ids = self._recent_story_ids[-RECENT_STORY_LIMIT:]
+        self._selected_story_id = None
+
     async def _async_save_controller_state(self) -> None:
         """Persist enabled state and AI DJ-owned queue items."""
         if self._store is None:
@@ -200,6 +243,7 @@ class AiDjRuntime:
             {
                 "enabled": self._enabled,
                 "owned_queue_items": self._owned_queue_items,
+                "recent_story_ids": self._recent_story_ids[-RECENT_STORY_LIMIT:],
             }
         )
 
@@ -263,6 +307,7 @@ class AiDjRuntime:
                 "boundary": boundary,
                 "created_at": datetime.now().astimezone().isoformat(),
             }
+            self._record_selected_story()
             await self._async_save_controller_state()
         except Exception:  # noqa: BLE001 - failed preparation must not interrupt music
             _LOGGER.exception(
@@ -351,6 +396,13 @@ class AiDjRuntime:
 
         items, errors = await async_collect_briefing(tuple(providers))
         weather_items = [item for item in items if item.provider == "weather"]
+        self._selected_story_id = None
+        selected_story = self._select_feed_story(items)
+        if selected_story is not None:
+            items = [
+                item for item in items
+                if item.provider != "feedreader"
+            ] + [selected_story]
         if errors:
             _LOGGER.info(
                 "Optional briefing providers unavailable for station %s: %s",
@@ -392,8 +444,12 @@ class AiDjRuntime:
         message = await self.async_generate_briefing(weather_entity_id, agent_id, prompt)
         if self.music_assistant_enabled:
             await self.async_queue_announcement_next(message)
+            self._record_selected_story()
+            await self._async_save_controller_state()
             return
         await self.async_announce_next(message)
+        self._record_selected_story()
+        await self._async_save_controller_state()
 
     async def async_announce_next(self, message: str) -> None:
         """Speak a message when the configured player advances to another track."""

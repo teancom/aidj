@@ -9,6 +9,7 @@ import pytest
 from homeassistant.config_entries import SOURCE_USER
 from homeassistant.const import STATE_IDLE, STATE_PLAYING
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
+from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components import aidj
@@ -223,7 +224,44 @@ async def test_feedreader_provider_normalizes_latest_event(
             ),
             occurred_at=items[0].occurred_at,
             source="https://example.test/news",
+            identity="https://example.test/news",
         )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_feedreader_provider_uses_native_coordinator_entry_pool(
+    hass: HomeAssistant,
+) -> None:
+    """Feedreader's configured max_entries pool is used instead of only latest."""
+    feed_entry = MockConfigEntry(domain="feedreader", data={"url": "https://example.test/feed"})
+    feed_entry.add_to_hass(hass)
+    feed_entry.runtime_data = type(
+        "FeedCoordinator",
+        (),
+        {
+            "url": "https://example.test/feed",
+            "data": [
+                {"title": "Story one", "link": "https://example.test/one"},
+                {"title": "Story two", "link": "https://example.test/two"},
+            ],
+        },
+    )()
+    registry = er.async_get(hass)
+    registry.async_get_or_create(
+        "event", "feedreader", "feedreader_latest_feed", config_entry=feed_entry
+    )
+    entity_id = registry.async_get_entity_id(
+        "event", "feedreader", "feedreader_latest_feed"
+    )
+    assert entity_id is not None
+    hass.states.async_set(entity_id, "2026-07-31T12:00:00+00:00", {"event_type": "feedreader"})
+
+    items = await FeedreaderEventProvider(hass, entity_id).async_collect()
+
+    assert [item.title for item in items] == ["Story one", "Story two"]
+    assert [item.identity for item in items] == [
+        "https://example.test/one", "https://example.test/two"
     ]
 
 
@@ -1091,6 +1129,32 @@ async def test_native_renderer_keeps_ma_and_ha_credentials_separate(
     assert runtime._ma_client.token == "ma-secret"
     assert runtime._ma_tts.access_token == "ha-secret"
     runtime.async_unload()
+
+
+def test_story_rotation_prefers_unseen_then_bounds_fifo(hass: HomeAssistant) -> None:
+    """Story rotation avoids recent items and keeps only the bounded FIFO."""
+    from custom_components.aidj.runtime import AiDjRuntime
+
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_NAME: "Living Room Radio", CONF_PLAYER: "media_player.living_room_streamer_2"})
+    runtime = AiDjRuntime(hass, entry)
+    stories = [
+        BriefingItem(provider="feedreader", title=f"Story {index}", summary="", identity=f"story-{index}")
+        for index in range(12)
+    ]
+
+    assert runtime._select_feed_story(stories).identity == "story-0"
+    runtime._record_selected_story()
+    assert runtime._recent_story_ids == ["story-0"]
+
+    runtime._recent_story_ids = [f"story-{index}" for index in range(10)]
+    assert runtime._select_feed_story(stories).identity == "story-10"
+    runtime._record_selected_story()
+    assert runtime._recent_story_ids == [f"story-{index}" for index in range(1, 11)]
+
+    runtime._recent_story_ids = ["story-0", "story-1"]
+    assert runtime._select_feed_story(stories[:2]).identity == "story-0"
+    runtime._record_selected_story()
+    assert runtime._recent_story_ids == ["story-1", "story-0"]
 
 
 @pytest.mark.asyncio

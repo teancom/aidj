@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import hashlib
 import logging
-from typing import Protocol
+from typing import Any, Protocol
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 
@@ -23,6 +25,7 @@ class BriefingItem:
     summary: str
     occurred_at: datetime | None = None
     source: str | None = None
+    identity: str | None = None
 
 
 class BriefingProvider(Protocol):
@@ -71,50 +74,102 @@ class WeatherEntityProvider:
         ]
 
 
+def _feed_item_identity(entry: dict[str, Any], feed_source: str) -> str:
+    """Return a stable identity for one Feedreader item."""
+    for key in ("link", "id"):
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    fallback = "|".join(
+        str(entry.get(key) or "").strip()
+        for key in ("title", "published", "updated", "description")
+    )
+    return "sha256:" + hashlib.sha256(f"{feed_source}|{fallback}".encode()).hexdigest()
+
+
+def _normalize_feed_entry(
+    entry: dict[str, Any],
+    *,
+    feed_source: str,
+    occurred_at: datetime | None,
+    provider_name: str,
+) -> BriefingItem | None:
+    """Normalize one native Feedreader coordinator entry."""
+    title = entry.get("title") or entry.get("name")
+    if not isinstance(title, str) or not title.strip():
+        return None
+    description = (
+        entry.get("description")
+        or entry.get("summary")
+        or entry.get("content")
+        or ""
+    )
+    if isinstance(description, list) and description and isinstance(description[0], dict):
+        description = description[0].get("value", "")
+    if not isinstance(description, str):
+        description = str(description)
+    description = " ".join(description.split())[:600]
+    title = title.strip()
+    summary = f"Latest local news: {title}"
+    if description:
+        summary = f"{summary}. {description}"
+    link = entry.get("link")
+    source = link.strip() if isinstance(link, str) and link.strip() else feed_source
+    return BriefingItem(
+        provider=provider_name,
+        title=title,
+        summary=summary,
+        occurred_at=occurred_at,
+        source=source,
+        identity=_feed_item_identity(entry, feed_source),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class FeedreaderEventProvider:
-    """Expose the latest Feedreader event entity as a briefing fact."""
+    """Expose Feedreader's bounded native coordinator list as briefing facts."""
 
     hass: HomeAssistant
     entity_id: str
     name: str = "feedreader"
 
     async def async_collect(self) -> list[BriefingItem]:
-        """Return the latest feed item when the event entity is available."""
+        """Return all entries retained by Feedreader, newest first."""
         state = self.hass.states.get(self.entity_id)
         if state is None:
             return []
 
-        event_data = state.attributes.get("event_data")
-        if not isinstance(event_data, dict):
-            event_data = state.attributes
-
-        title = event_data.get("title") or event_data.get("name")
-        if not isinstance(title, str) or not title.strip():
-            return []
-
-        description = (
-            event_data.get("description")
-            or event_data.get("summary")
-            or event_data.get("content")
-            or ""
-        )
-        if not isinstance(description, str):
-            description = str(description)
-        description = " ".join(description.split())[:600]
-        summary = f"Latest local news: {title.strip()}"
-        if description:
-            summary = f"{summary}. {description}"
-
-        link = event_data.get("link")
-        return [
-            BriefingItem(
-                provider=self.name,
-                title=title.strip(),
-                summary=summary,
-                occurred_at=state.last_updated,
-                source=link if isinstance(link, str) else self.entity_id,
+        feed_source = self.entity_id
+        entries: list[dict[str, Any]] | None = None
+        registry_entry = er.async_get(self.hass).async_get(self.entity_id)
+        if registry_entry and registry_entry.config_entry_id:
+            config_entry = self.hass.config_entries.async_get_entry(
+                registry_entry.config_entry_id
             )
+            coordinator = getattr(config_entry, "runtime_data", None) if config_entry else None
+            configured_url = getattr(coordinator, "url", None)
+            if isinstance(configured_url, str) and configured_url:
+                feed_source = configured_url
+            coordinator_data = getattr(coordinator, "data", None)
+            if isinstance(coordinator_data, list):
+                entries = [entry for entry in coordinator_data if isinstance(entry, dict)]
+
+        if entries is None:
+            event_data = state.attributes.get("event_data")
+            if not isinstance(event_data, dict):
+                event_data = state.attributes
+            entries = [event_data]
+
+        return [
+            item
+            for entry in entries
+            if (item := _normalize_feed_entry(
+                entry,
+                feed_source=feed_source,
+                occurred_at=state.last_updated,
+                provider_name=self.name,
+            ))
+            is not None
         ]
 
 
