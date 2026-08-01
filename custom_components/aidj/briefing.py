@@ -14,7 +14,11 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
-from .music_context import fallback_queue_context, has_tracks, native_queue_context
+from .music_context import (
+    fallback_queue_context,
+    has_tracks,
+    native_queue_context,
+)
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -386,32 +390,83 @@ class QueueProvider:
     music_assistant_player_id: str | None = None
     name: str = "music_assistant_queue"
 
-    async def _async_collect_native(self) -> list[BriefingItem]:
-        """Collect the absolute ±3 window from the official MA client."""
-        queue_player_id = self.music_assistant_player_id or self.player_entity_id
+    @staticmethod
+    def _queue_item_identity(item: Any) -> tuple[Any, ...] | None:
+        """Return comparable identity fields from an HA or native MA queue item."""
+        if hasattr(item, "to_dict"):
+            item = item.to_dict()
+        if not isinstance(item, dict):
+            return None
+        media_item = item.get("media_item")
+        if not isinstance(media_item, dict):
+            return None
+        artists = media_item.get("artists") or []
+        artist_names = tuple(
+            artist.get("name")
+            for artist in artists
+            if isinstance(artist, dict) and isinstance(artist.get("name"), str)
+        )
+        queue_item_id = item.get("queue_item_id")
+        uri = media_item.get("uri")
+        track = media_item.get("name") or item.get("name")
+        if not all(isinstance(value, str) and value for value in (queue_item_id, uri, track)):
+            return None
+        return queue_item_id, uri, track, artist_names
+
+    @staticmethod
+    def _first_native_item_after(items: list[Any], current_index: int) -> Any | None:
+        """Return the first native queue item after the current absolute index."""
+        return next(
+            (
+                item
+                for item in items
+                if isinstance(getattr(item, "index", None), int)
+                and item.index > current_index
+            ),
+            None,
+        )
+
+    async def _async_collect_native(self) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        """Collect the native queue snapshot and structured context."""
+        queue_player_id = self.music_assistant_player_id
         queue = await self.music_assistant_client.player_queues.get_active_queue(
             queue_player_id
         )
-        if queue is None or queue.current_index is None:
-            return []
+        if queue is None or not isinstance(queue.current_index, int):
+            return None
         queue_items = await self.music_assistant_client.player_queues.get_queue_items(
             queue.queue_id
         )
         context_by_side = native_queue_context(queue_items, queue.current_index)
-        if not has_tracks(context_by_side):
-            return []
-        return [
-            BriefingItem(
-                provider=self.name,
-                title="Music context",
-                summary=json.dumps(context_by_side, sort_keys=True),
-            )
-        ]
+        native_current = next(
+            (
+                item
+                for item in queue_items
+                if getattr(item, "index", None) == queue.current_index
+            ),
+            None,
+        )
+        native_next = self._first_native_item_after(queue_items, queue.current_index)
+        if (
+            not has_tracks(context_by_side)
+            or not context_by_side.get("current")
+            or not context_by_side.get("next")
+            or native_current is None
+            or native_next is None
+        ):
+            return None
+        return (
+            {
+                "queue_id": queue.queue_id,
+                "current_index": queue.current_index,
+                "current_item": native_current,
+                "next_item": native_next,
+            },
+            context_by_side,
+        )
 
-    async def async_collect(self) -> list[BriefingItem]:
-        """Return up to three previous and next structured queue tracks."""
-        if self.music_assistant_client is not None:
-            return await self._async_collect_native()
+    async def _async_collect_ha(self) -> dict[str, Any] | None:
+        """Collect the HA-facing queue snapshot for the configured entity."""
         response = await self.hass.services.async_call(
             "music_assistant",
             "get_queue",
@@ -419,17 +474,90 @@ class QueueProvider:
             blocking=True,
             return_response=True,
         )
-        if not isinstance(response, dict):
+        queue_data = response.get("service_response", response) if isinstance(response, dict) else None
+        player_queue = queue_data.get(self.player_entity_id) if isinstance(queue_data, dict) else None
+        return player_queue if isinstance(player_queue, dict) else None
+
+    async def async_collect(self) -> list[BriefingItem]:
+        """Return queue context only when HA and native MA agree."""
+        if self.music_assistant_client is None or not self.music_assistant_player_id:
+            _LOGGER.error(
+                "Music context unavailable for HA entity %s: native MA client/player is not configured",
+                self.player_entity_id,
+            )
             return []
-        queue_data = response.get("service_response", response)
-        if not isinstance(queue_data, dict):
+        try:
+            ha_queue = await self._async_collect_ha()
+        except Exception as err:  # noqa: BLE001 - fail closed on HA read failure
+            _LOGGER.error(
+                "Music context unavailable for HA entity %s / MA player %s: HA queue lookup failed: %s",
+                self.player_entity_id,
+                self.music_assistant_player_id,
+                err,
+            )
             return []
-        player_queue = queue_data.get(self.player_entity_id)
-        if not isinstance(player_queue, dict):
+        try:
+            native_result = await self._async_collect_native()
+        except Exception as err:  # noqa: BLE001 - fail closed on native read failure
+            _LOGGER.error(
+                "Music context unavailable for HA entity %s / MA player %s: native queue lookup failed: %s",
+                self.player_entity_id,
+                self.music_assistant_player_id,
+                err,
+            )
+            return []
+        if ha_queue is None or native_result is None:
+            _LOGGER.error(
+                "Music context unavailable for HA entity %s / MA player %s: "
+                "HA queue_id=%s index=%s current=%s next=%s; "
+                "native queue_id=%s index=%s current=%s next=%s",
+                self.player_entity_id,
+                self.music_assistant_player_id,
+                ha_queue.get("queue_id") if ha_queue else None,
+                ha_queue.get("current_index") if ha_queue else None,
+                self._queue_item_identity(ha_queue.get("current_item")) if ha_queue else None,
+                self._queue_item_identity(ha_queue.get("next_item")) if ha_queue else None,
+                native_result[0].get("queue_id") if native_result else None,
+                native_result[0].get("current_index") if native_result else None,
+                self._queue_item_identity(native_result[0].get("current_item")) if native_result else None,
+                self._queue_item_identity(native_result[0].get("next_item")) if native_result else None,
+            )
             return []
 
-        context_by_side = fallback_queue_context(player_queue)
-        if not has_tracks(context_by_side):
+        native_snapshot, context_by_side = native_result
+        ha_current = ha_queue.get("current_item")
+        ha_next = ha_queue.get("next_item")
+        mismatches = {
+            "queue_id": (ha_queue.get("queue_id"), native_snapshot.get("queue_id")),
+            "current_index": (ha_queue.get("current_index"), native_snapshot.get("current_index")),
+            "current_item": (
+                self._queue_item_identity(ha_current),
+                self._queue_item_identity(native_snapshot.get("current_item")),
+            ),
+            "next_item": (
+                self._queue_item_identity(ha_next),
+                self._queue_item_identity(native_snapshot.get("next_item")),
+            ),
+        }
+        mismatches = {
+            name: values for name, values in mismatches.items() if values[0] != values[1]
+        }
+        if mismatches:
+            _LOGGER.error(
+                "Music context mismatch for HA entity %s / MA player %s: mismatches=%s; "
+                "HA queue=%s index=%s current=%s next=%s; native queue=%s index=%s current=%s next=%s",
+                self.player_entity_id,
+                self.music_assistant_player_id,
+                mismatches,
+                ha_queue.get("queue_id"),
+                ha_queue.get("current_index"),
+                self._queue_item_identity(ha_current),
+                self._queue_item_identity(ha_next),
+                native_snapshot.get("queue_id"),
+                native_snapshot.get("current_index"),
+                self._queue_item_identity(native_snapshot.get("current_item")),
+                self._queue_item_identity(native_snapshot.get("next_item")),
+            )
             return []
         return [
             BriefingItem(

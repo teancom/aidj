@@ -350,7 +350,20 @@ class AiDjRuntime:
             raise ServiceValidationError(
                 f"Weather entity does not exist: {weather_entity_id}"
             )
-
+        if self.music_assistant_enabled and not any(
+            item.provider == "music_assistant_queue" for item in items
+        ):
+            _LOGGER.error(
+                "Briefing generation stopped: verified music context was unavailable for "
+                "HA entity %s / MA player %s; provider errors=%s",
+                self.player_entity_id,
+                self.settings.get(CONF_MA_PLAYER, ""),
+                collection.errors,
+            )
+            raise HomeAssistantError(
+                "Music Assistant queue context was unavailable or inconsistent; "
+                "the briefing was not generated"
+            )
         full_prompt = build_briefing_prompt(items, prompt)
         generator = HaConversationBriefingGenerator(self.hass, agent_id)
         generated = await generator.async_generate(full_prompt)

@@ -10,6 +10,7 @@ import pytest
 from homeassistant.config_entries import SOURCE_USER
 from homeassistant.const import STATE_IDLE, STATE_PLAYING
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import event as event_helper
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -18,7 +19,7 @@ from custom_components import aidj
 from custom_components.aidj.ha_music_assistant import HaMusicAssistantQueue
 from custom_components.aidj.music_assistant import MusicAssistantQueueAdapter
 from custom_components.aidj.music_context import fallback_queue_context
-from custom_components.aidj.briefing_assembly import build_briefing_providers
+from custom_components.aidj.briefing_assembly import BriefingCollection, build_briefing_providers
 from custom_components.aidj.prompt import (
     briefing_needs_grounding_retry,
     build_briefing_prompt,
@@ -310,24 +311,61 @@ async def test_queue_provider_normalizes_current_and_next_tracks(
         return_value={
             "service_response": {
                 "media_player.living_room_streamer_2": {
+                    "queue_id": "queue-1",
+                    "current_index": 4,
                     "current_item": {
+                        "queue_item_id": "item-4",
                         "media_item": {
-                            "uri": "library://track/current",
+                            "uri": "library://track/4",
                             "name": "Current Song",
                             "artists": [{"name": "Current Artist"}],
-                        }
+                        },
                     },
                     "next_item": {
+                        "queue_item_id": "item-5",
                         "media_item": {
-                            "uri": "library://track/next",
+                            "uri": "library://track/5",
                             "name": "Next Song",
                             "artists": [{"name": "Next Artist"}],
-                        }
+                        },
                     },
                 }
             }
         }
     )
+    class Client:
+        class Queues:
+            async def get_active_queue(self, player_id: str):
+                assert player_id == "wiim-player"
+                return type("Queue", (), {"queue_id": "queue-1", "current_index": 4})()
+
+            async def get_queue_items(self, queue_id: str):
+                assert queue_id == "queue-1"
+                return [
+                    type(
+                        "Item",
+                        (),
+                        {
+                            "index": index,
+                            "queue_item_id": f"item-{index}",
+                            "to_dict": lambda self, index=index, title=title, artist=artist: {
+                                "queue_item_id": f"item-{index}",
+                                "media_item": {
+                                    "uri": f"library://track/{index}",
+                                    "name": title,
+                                    "artists": [{"name": artist}],
+                                },
+                            },
+                        },
+                    )()
+                    for index, title, artist in (
+                        (4, "Current Song", "Current Artist"),
+                        (5, "Next Song", "Next Artist"),
+                    )
+                ]
+
+        player_queues = Queues()
+
     hass.services.async_register(
         "music_assistant",
         "get_queue",
@@ -336,7 +374,10 @@ async def test_queue_provider_normalizes_current_and_next_tracks(
     )
 
     items = await QueueProvider(
-        hass, "media_player.living_room_streamer_2"
+        hass,
+        "media_player.living_room_streamer_2",
+        Client(),
+        "wiim-player",
     ).async_collect()
 
     assert [item.title for item in items] == ["Music context"]
@@ -394,10 +435,11 @@ async def test_queue_provider_collects_native_three_track_window(hass: HomeAssis
                         (),
                         {
                             "index": index,
-                            "uri": f"library://track/{index}",
+                            "queue_item_id": f"item-{index}",
                             "to_dict": lambda self: {
+                                "queue_item_id": self.queue_item_id,
                                 "media_item": {
-                                    "uri": self.uri,
+                                    "uri": f"library://track/{index}",
                                     "name": title,
                                     "artists": [{"name": f"Artist {index}"}],
                                     "album": {"name": f"Album {index}", "year": 2000 + index},
@@ -410,6 +452,36 @@ async def test_queue_provider_collects_native_three_track_window(hass: HomeAssis
                 return [item(i, f"Track {i}", "micro-genre" if i == 2 else None) for i in range(7)]
 
         player_queues = Queues()
+
+    get_queue = AsyncMock(
+        return_value={
+            "service_response": {
+                "media_player.living_room_streamer_2": {
+                    "queue_id": "queue-1",
+                    "current_index": 3,
+                    "current_item": {
+                        "queue_item_id": "item-3",
+                        "media_item": {
+                            "uri": "library://track/3",
+                            "name": "Track 3",
+                            "artists": [{"name": "Artist 3"}],
+                        },
+                    },
+                    "next_item": {
+                        "queue_item_id": "item-4",
+                        "media_item": {
+                            "uri": "library://track/4",
+                            "name": "Track 4",
+                            "artists": [{"name": "Artist 4"}],
+                        },
+                    },
+                }
+            }
+        }
+    )
+    hass.services.async_register(
+        "music_assistant", "get_queue", get_queue, supports_response=SupportsResponse.ONLY
+    )
 
     client = Client()
     items = await QueueProvider(
@@ -429,6 +501,73 @@ async def test_queue_provider_collects_native_three_track_window(hass: HomeAssis
     assert '"track": "Track 3"' in items[0].summary
     assert '"genre": "micro-genre"' in items[0].summary
     assert '"year": 2002' in items[0].summary
+
+
+@pytest.mark.asyncio
+async def test_queue_provider_fails_closed_when_ha_and_native_disagree(
+    hass: HomeAssistant,
+) -> None:
+    """A disagreement in current track identity must not produce music facts."""
+    get_queue = AsyncMock(
+        return_value={
+            "service_response": {
+                "media_player.living_room_streamer_2": {
+                    "queue_id": "queue-1",
+                    "current_index": 3,
+                    "current_item": {
+                        "queue_item_id": "item-3",
+                        "media_item": {
+                            "uri": "library://track/wrong",
+                            "name": "Wrong Song",
+                            "artists": [{"name": "Wrong Artist"}],
+                        },
+                    },
+                    "next_item": {
+                        "queue_item_id": "item-4",
+                        "media_item": {
+                            "uri": "library://track/4",
+                            "name": "Track 4",
+                            "artists": [{"name": "Artist 4"}],
+                        },
+                    },
+                }
+            }
+        }
+    )
+    hass.services.async_register(
+        "music_assistant", "get_queue", get_queue, supports_response=SupportsResponse.ONLY
+    )
+
+    class Queues:
+        async def get_active_queue(self, player_id: str):
+            return type("Queue", (), {"queue_id": "queue-1", "current_index": 3})()
+
+        async def get_queue_items(self, queue_id: str):
+            def item(index: int, title: str, artist: str):
+                return type(
+                    "Item",
+                    (),
+                    {
+                        "index": index,
+                        "queue_item_id": f"item-{index}",
+                        "to_dict": lambda self: {
+                            "queue_item_id": self.queue_item_id,
+                            "media_item": {
+                                "uri": f"library://track/{index}",
+                                "name": title,
+                                "artists": [{"name": artist}],
+                            },
+                        },
+                    },
+                )()
+            return [item(3, "Track 3", "Artist 3"), item(4, "Track 4", "Artist 4")]
+
+    client = type("Client", (), {"player_queues": Queues()})()
+    items = await QueueProvider(
+        hass, "media_player.living_room_streamer_2", client, "wiim-player"
+    ).async_collect()
+
+    assert items == []
 
 
 @pytest.mark.asyncio
@@ -1251,6 +1390,42 @@ async def test_briefing_service_returns_generated_text_without_playback(
     assert "Write one sentence for radio." in prompt
     assert "Forecast Home: conditions: sunny, temperature: 89°F" in prompt
     tts_speak.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_native_briefing_rejects_missing_music_context(
+    hass: HomeAssistant,
+) -> None:
+    """Native transport never lets the conversation agent invent track facts."""
+    from custom_components.aidj.runtime import AiDjRuntime
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+            CONF_MA_URL: "http://ma.local:8095",
+            CONF_MA_TOKEN: "ma-secret",
+            CONF_HA_TOKEN: "ha-secret",
+            CONF_MA_PLAYER: "wiim-player",
+        },
+    )
+    entry.add_to_hass(hass)
+    conversation = AsyncMock()
+    hass.services.async_register("conversation", "process", conversation, supports_response=SupportsResponse.ONLY)
+    runtime = AiDjRuntime(hass, entry)
+    with patch(
+        "custom_components.aidj.runtime.async_collect_station_briefing",
+        return_value=BriefingCollection(
+            [BriefingItem("weather", "Weather", "Weather: sunny")], {}
+        ),
+    ):
+        with pytest.raises(HomeAssistantError, match="queue context was unavailable"):
+            await runtime._async_generate_briefing(
+                "weather.forecast_home", "conversation.agent"
+            )
+    conversation.assert_not_awaited()
 
 
 @pytest.mark.asyncio

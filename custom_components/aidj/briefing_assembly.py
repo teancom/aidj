@@ -94,6 +94,7 @@ async def async_collect_station_briefing(
         weather_entity_id=weather_entity_id,
         player_entity_id=player_entity_id,
         music_assistant_client=music_assistant_client,
+        music_assistant_player_id=music_assistant_player_id,
     )
     items, errors = await async_collect_briefing(providers)
     return BriefingCollection(items, errors)
