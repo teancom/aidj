@@ -60,9 +60,13 @@ class MusicAssistantQueueAdapter:
         if queue is None:
             raise RuntimeError(f"No active Music Assistant queue for {self.player_id}")
 
+        # A bare HTTP URL is parsed by MA as MediaType.UNKNOWN. Address it
+        # through the built-in provider so MA resolves it as a playable track
+        # and can route it to the configured player controller.
+        ma_uri = f"builtin://track/{media_uri}"
         await self.client.player_queues.play_media(
             queue_id=queue.queue_id,
-            media=[media_uri],
+            media=[ma_uri],
             option=QueueOption.NEXT,
         )
 
@@ -71,10 +75,10 @@ class MusicAssistantQueueAdapter:
             item
             for item in items
             if getattr(item, "media_item", None) is not None
-            and getattr(item.media_item, "uri", None) == media_uri
+            and getattr(item.media_item, "uri", None) == ma_uri
         ]
         if not matching:
-            raise RuntimeError(f"Music Assistant did not expose inserted queue item {media_uri}")
+            raise RuntimeError(f"Music Assistant did not expose inserted queue item {ma_uri}")
         return matching[-1].queue_item_id
 
     async def async_remove(self, queue_item_id: str) -> None:

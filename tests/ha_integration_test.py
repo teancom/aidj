@@ -49,7 +49,7 @@ from music_assistant_models.enums import QueueOption
 async def test_music_assistant_queue_adapter_inserts_next_without_replacing() -> None:
     """Native MA transport uses one add-only NEXT queue operation."""
     class Media:
-        uri = "http://ha.local/tts/clip.mp3"
+        uri = "builtin://track/http://ha.local/tts/clip.mp3"
 
     class Item:
         queue_item_id = "aidj-item-1"
@@ -74,7 +74,7 @@ async def test_music_assistant_queue_adapter_inserts_next_without_replacing() ->
     assert item_id == "aidj-item-1"
     queues.play_media.assert_awaited_once_with(
         queue_id="queue-1",
-        media=["http://ha.local/tts/clip.mp3"],
+        media=["builtin://track/http://ha.local/tts/clip.mp3"],
         option=QueueOption.NEXT,
     )
 
