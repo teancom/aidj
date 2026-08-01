@@ -14,7 +14,7 @@ def select_feed_story(
     items: Sequence[BriefingItem],
     recent_story_ids: Sequence[str],
 ) -> BriefingItem | None:
-    """Choose an unseen feed story, or the least-recently-used available one."""
+    """Choose an unseen recent feed story, or no story when none is eligible."""
     feed_items = [
         item
         for item in items
@@ -28,12 +28,7 @@ def select_feed_story(
         if item.identity not in recent:
             return item
 
-    return min(
-        feed_items,
-        key=lambda item: recent_story_ids.index(item.identity)
-        if item.identity in recent_story_ids
-        else -1,
-    )
+    return None
 
 
 def record_story(

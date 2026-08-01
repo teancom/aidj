@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from calendar import timegm
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 import hashlib
 import json
 import logging
@@ -172,14 +174,58 @@ def _feed_item_identity(entry: dict[str, Any], feed_source: str) -> str:
     return "sha256:" + hashlib.sha256(f"{feed_source}|{fallback}".encode()).hexdigest()
 
 
+NEWS_FRESHNESS_WINDOW = timedelta(days=2)
+
+
+def _feed_entry_timestamp(entry: dict[str, Any]) -> datetime | None:
+    """Extract and normalize an article publication/update timestamp."""
+    # Feedreader retains feedparser's parsed fields on coordinator entries.
+    # Prefer updated, matching Home Assistant's own Feedreader ordering, and
+    # support the public string forms used by feeds/tests as well.
+    for parsed_key, value_key in (
+        ("updated_parsed", "updated"),
+        ("published_parsed", "published"),
+    ):
+        parsed_value = entry.get(parsed_key)
+        if parsed_value is not None:
+            try:
+                timestamp = datetime.fromtimestamp(timegm(parsed_value), tz=timezone.utc)
+            except (TypeError, OverflowError, ValueError):
+                pass
+            else:
+                return timestamp
+
+        for key in (value_key, "pubDate" if value_key == "published" else "date"):
+            value = entry.get(key)
+            if isinstance(value, datetime):
+                timestamp = value
+            elif isinstance(value, str) and value.strip():
+                try:
+                    timestamp = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+                except ValueError:
+                    try:
+                        timestamp = parsedate_to_datetime(value.strip())
+                    except (TypeError, ValueError, IndexError):
+                        continue
+            else:
+                continue
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=timezone.utc)
+            return timestamp.astimezone(timezone.utc)
+    return None
+
+
 def _normalize_feed_entry(
     entry: dict[str, Any],
     *,
     feed_source: str,
-    occurred_at: datetime | None,
     provider_name: str,
+    now: datetime,
 ) -> BriefingItem | None:
-    """Normalize one native Feedreader coordinator entry."""
+    """Normalize one recent native Feedreader coordinator entry."""
+    article_timestamp = _feed_entry_timestamp(entry)
+    if article_timestamp is None or article_timestamp < now - NEWS_FRESHNESS_WINDOW or article_timestamp > now:
+        return None
     title = entry.get("title") or entry.get("name")
     if not isinstance(title, str) or not title.strip():
         return None
@@ -204,7 +250,7 @@ def _normalize_feed_entry(
         provider=provider_name,
         title=title,
         summary=summary,
-        occurred_at=occurred_at,
+        occurred_at=article_timestamp,
         source=source,
         identity=_feed_item_identity(entry, feed_source),
     )
@@ -245,14 +291,15 @@ class FeedreaderEventProvider:
                 event_data = state.attributes
             entries = [event_data]
 
+        now = dt_util.now().astimezone(timezone.utc)
         return [
             item
             for entry in entries
             if (item := _normalize_feed_entry(
                 entry,
                 feed_source=feed_source,
-                occurred_at=state.last_updated,
                 provider_name=self.name,
+                now=now,
             ))
             is not None
         ]

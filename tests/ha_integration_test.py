@@ -573,8 +573,13 @@ async def test_queue_provider_fails_closed_when_ha_and_native_disagree(
 @pytest.mark.asyncio
 async def test_feedreader_provider_normalizes_latest_event(
     hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Feedreader event data becomes compact local-news context."""
+    monkeypatch.setattr(
+        "custom_components.aidj.briefing.dt_util.now",
+        lambda: datetime(2026, 8, 1, 12, tzinfo=timezone.utc),
+    )
     hass.states.async_set(
         "event.san_diego_news",
         "2026-07-31T12:00:00+00:00",
@@ -583,6 +588,7 @@ async def test_feedreader_provider_normalizes_latest_event(
             "event_data": {
                 "title": "San Diego council approves new park",
                 "description": "  A local update with   extra whitespace.  ",
+                "published": "2026-08-01T11:30:00+00:00",
                 "link": "https://example.test/news",
             },
         },
@@ -608,8 +614,13 @@ async def test_feedreader_provider_normalizes_latest_event(
 @pytest.mark.asyncio
 async def test_feedreader_provider_uses_native_coordinator_entry_pool(
     hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Feedreader's configured max_entries pool is used instead of only latest."""
+    monkeypatch.setattr(
+        "custom_components.aidj.briefing.dt_util.now",
+        lambda: datetime(2026, 8, 1, 12, tzinfo=timezone.utc),
+    )
     feed_entry = MockConfigEntry(domain="feedreader", data={"url": "https://example.test/feed"})
     feed_entry.add_to_hass(hass)
     feed_entry.runtime_data = type(
@@ -618,8 +629,16 @@ async def test_feedreader_provider_uses_native_coordinator_entry_pool(
         {
             "url": "https://example.test/feed",
             "data": [
-                {"title": "Story one", "link": "https://example.test/one"},
-                {"title": "Story two", "link": "https://example.test/two"},
+                {
+                    "title": "Story one",
+                    "published": "2026-08-01T11:00:00+00:00",
+                    "link": "https://example.test/one",
+                },
+                {
+                    "title": "Story two",
+                    "published": "2026-07-31T11:00:00+00:00",
+                    "link": "https://example.test/two",
+                },
             ],
         },
     )()
@@ -637,8 +656,52 @@ async def test_feedreader_provider_uses_native_coordinator_entry_pool(
 
     assert [item.title for item in items] == ["Story one", "Story two"]
     assert [item.identity for item in items] == [
-        "https://example.test/one", "https://example.test/two"
+        "https://example.test/one",
+        "https://example.test/two",
     ]
+
+
+@pytest.mark.asyncio
+async def test_feedreader_provider_skips_stale_missing_and_future_articles(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Feedreader facts require an article date inside the recent window."""
+    monkeypatch.setattr(
+        "custom_components.aidj.briefing.dt_util.now",
+        lambda: datetime(2026, 8, 1, 12, tzinfo=timezone.utc),
+    )
+    feed_entry = MockConfigEntry(domain="feedreader", data={"url": "https://example.test/feed"})
+    feed_entry.add_to_hass(hass)
+    feed_entry.runtime_data = type(
+        "FeedCoordinator",
+        (),
+        {
+            "url": "https://example.test/feed",
+            "data": [
+                {
+                    "title": "Recent",
+                    "published_parsed": (2026, 8, 1, 10, 0, 0, 5, 213, 0),
+                    "link": "https://example.test/recent",
+                },
+                {"title": "Stale", "published": "2026-04-01T10:00:00+00:00"},
+                {"title": "Undated", "link": "https://example.test/undated"},
+                {"title": "Future", "published": "2026-09-01T10:00:00+00:00"},
+            ],
+        },
+    )()
+    registry = er.async_get(hass)
+    registry.async_get_or_create(
+        "event", "feedreader", "feedreader_dated_feed", config_entry=feed_entry
+    )
+    entity_id = registry.async_get_entity_id("event", "feedreader", "feedreader_dated_feed")
+    assert entity_id is not None
+    hass.states.async_set(entity_id, "2026-08-01T12:00:00+00:00", {"event_type": "feedreader"})
+
+    items = await FeedreaderEventProvider(hass, entity_id).async_collect()
+
+    assert [item.title for item in items] == ["Recent"]
+    assert items[0].identity == "https://example.test/recent"
 
 
 @pytest.mark.asyncio
@@ -1759,9 +1822,7 @@ def test_story_rotation_prefers_unseen_then_bounds_fifo() -> None:
     assert recent == [f"story-{index}" for index in range(1, 11)]
 
     recent = ["story-0", "story-1"]
-    selected = select_feed_story(stories[:2], recent)
-    assert selected is not None and selected.identity == "story-0"
-    assert record_story(recent, selected.identity, 10) == ["story-1", "story-0"]
+    assert select_feed_story(stories[:2], recent) is None
 
 
 @pytest.mark.asyncio
