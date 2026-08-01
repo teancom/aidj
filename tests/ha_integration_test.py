@@ -18,6 +18,7 @@ from custom_components import aidj
 from custom_components.aidj.music_assistant import MusicAssistantQueueAdapter
 from custom_components.aidj.music_context import fallback_queue_context
 from custom_components.aidj.prompt import build_briefing_prompt
+from custom_components.aidj.story import record_story, select_feed_story
 from custom_components.aidj.briefing import (
     AqiEntityProvider,
     BriefingItem,
@@ -1325,7 +1326,7 @@ async def test_native_briefing_next_queues_prepared_tts_url_without_tts_speak(
     hass: HomeAssistant,
 ) -> None:
     """Native briefing_next renders a URL and inserts it into MA's next slot."""
-    from custom_components.aidj.runtime import AiDjRuntime
+    from custom_components.aidj.runtime import AiDjRuntime, GeneratedBriefing
 
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -1342,11 +1343,11 @@ async def test_native_briefing_next_queues_prepared_tts_url_without_tts_speak(
     runtime = AiDjRuntime(hass, entry)
     tts_speak = AsyncMock()
     hass.services.async_register("tts", "speak", tts_speak)
-    generate = AsyncMock(return_value="Sunny and warm.")
+    generate = AsyncMock(return_value=GeneratedBriefing("Sunny and warm."))
     queue_announcement = AsyncMock(return_value="queue-item")
     announce_next = AsyncMock()
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(AiDjRuntime, "async_generate_briefing", generate)
+        patch.setattr(AiDjRuntime, "_async_generate_briefing", generate)
         patch.setattr(AiDjRuntime, "async_queue_announcement_next", queue_announcement)
         patch.setattr(AiDjRuntime, "async_announce_next", announce_next)
         await runtime.async_briefing_next("weather.forecast_home", "conversation.agent")
@@ -1361,7 +1362,7 @@ async def test_incomplete_native_settings_keep_boundary_tts_fallback(
     hass: HomeAssistant,
 ) -> None:
     """Without the HA URL token, briefing_next retains legacy boundary delivery."""
-    from custom_components.aidj.runtime import AiDjRuntime
+    from custom_components.aidj.runtime import AiDjRuntime, GeneratedBriefing
 
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -1375,11 +1376,11 @@ async def test_incomplete_native_settings_keep_boundary_tts_fallback(
         },
     )
     runtime = AiDjRuntime(hass, entry)
-    generate = AsyncMock(return_value="Sunny and warm.")
+    generate = AsyncMock(return_value=GeneratedBriefing("Sunny and warm."))
     queue_announcement = AsyncMock()
     announce_next = AsyncMock()
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(AiDjRuntime, "async_generate_briefing", generate)
+        patch.setattr(AiDjRuntime, "_async_generate_briefing", generate)
         patch.setattr(AiDjRuntime, "async_queue_announcement_next", queue_announcement)
         patch.setattr(AiDjRuntime, "async_announce_next", announce_next)
         await runtime.async_briefing_next("weather.forecast_home", "conversation.agent")
@@ -1481,30 +1482,33 @@ async def test_music_assistant_listener_timeout_does_not_block_setup(
     runtime.async_unload()
 
 
-def test_story_rotation_prefers_unseen_then_bounds_fifo(hass: HomeAssistant) -> None:
-    """Story rotation avoids recent items and keeps only the bounded FIFO."""
-    from custom_components.aidj.runtime import AiDjRuntime
-
-    entry = MockConfigEntry(domain=DOMAIN, data={CONF_NAME: "Living Room Radio", CONF_PLAYER: "media_player.living_room_streamer_2"})
-    runtime = AiDjRuntime(hass, entry)
+def test_story_rotation_prefers_unseen_then_bounds_fifo() -> None:
+    """Story rotation is pure and keeps only the bounded FIFO."""
     stories = [
-        BriefingItem(provider="feedreader:event.news_archives_voice_of_san_diego", title=f"Story {index}", summary="", identity=f"story-{index}")
+        BriefingItem(
+            provider="feedreader:event.news_archives_voice_of_san_diego",
+            title=f"Story {index}",
+            summary="",
+            identity=f"story-{index}",
+        )
         for index in range(12)
     ]
 
-    assert runtime._select_feed_story(stories).identity == "story-0"
-    runtime._record_selected_story()
-    assert runtime._recent_story_ids == ["story-0"]
+    selected = select_feed_story(stories, [])
+    assert selected is not None and selected.identity == "story-0"
+    recent = record_story([], selected.identity, 10)
+    assert recent == ["story-0"]
 
-    runtime._recent_story_ids = [f"story-{index}" for index in range(10)]
-    assert runtime._select_feed_story(stories).identity == "story-10"
-    runtime._record_selected_story()
-    assert runtime._recent_story_ids == [f"story-{index}" for index in range(1, 11)]
+    recent = [f"story-{index}" for index in range(10)]
+    selected = select_feed_story(stories, recent)
+    assert selected is not None and selected.identity == "story-10"
+    recent = record_story(recent, selected.identity, 10)
+    assert recent == [f"story-{index}" for index in range(1, 11)]
 
-    runtime._recent_story_ids = ["story-0", "story-1"]
-    assert runtime._select_feed_story(stories[:2]).identity == "story-0"
-    runtime._record_selected_story()
-    assert runtime._recent_story_ids == ["story-1", "story-0"]
+    recent = ["story-0", "story-1"]
+    selected = select_feed_story(stories[:2], recent)
+    assert selected is not None and selected.identity == "story-0"
+    assert record_story(recent, selected.identity, 10) == ["story-1", "story-0"]
 
 
 @pytest.mark.asyncio
@@ -1513,7 +1517,7 @@ async def test_controller_prepares_once_at_half_hour_window_and_persists_enabled
 ) -> None:
     """The station switch enables scheduling without interrupting playback."""
     from datetime import datetime, timezone
-    from custom_components.aidj.runtime import AiDjRuntime
+    from custom_components.aidj.runtime import AiDjRuntime, GeneratedBriefing
 
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -1535,9 +1539,9 @@ async def test_controller_prepares_once_at_half_hour_window_and_persists_enabled
     runtime = AiDjRuntime(hass, entry)
     runtime._ma_queue = type("Queue", (), {"async_remove": AsyncMock()})()
 
-    generate = AsyncMock(return_value="A fresh briefing.")
+    generate = AsyncMock(return_value=GeneratedBriefing("A fresh briefing."))
     queue = AsyncMock(return_value="queue-item-1")
-    with patch.object(AiDjRuntime, "async_generate_briefing", generate), patch.object(
+    with patch.object(AiDjRuntime, "_async_generate_briefing", generate), patch.object(
         AiDjRuntime, "async_queue_announcement_next", queue
     ):
         await runtime.async_initialize_controller()
@@ -1547,9 +1551,7 @@ async def test_controller_prepares_once_at_half_hour_window_and_persists_enabled
         await runtime._async_handle_schedule(boundary)
         await runtime._async_handle_schedule(boundary)
 
-    generate.assert_awaited_once_with(
-        "weather.forecast_home", "conversation.agent", consume_story=False
-    )
+    generate.assert_awaited_once_with("weather.forecast_home", "conversation.agent")
     assert (await runtime._store.async_load())["enabled"] is True
     assert runtime._owned_queue_items == {
         "queue-item-1": {

@@ -46,6 +46,7 @@ from .const import (
     RECENT_STORY_LIMIT,
 )
 from .prompt import build_briefing_prompt
+from .story import record_story, select_feed_story
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -92,6 +93,14 @@ def queue_media_ids(queue: Any, player_entity_id: str) -> set[str]:
     return media_ids
 
 
+@dataclass(frozen=True, slots=True)
+class GeneratedBriefing:
+    """Generated speech plus the optional story selected for this briefing."""
+
+    text: str
+    selected_story_id: str | None = None
+
+
 @dataclass(slots=True)
 class AiDjRuntime:
     """Runtime object for one configured AI DJ station."""
@@ -101,7 +110,6 @@ class AiDjRuntime:
     _owned_media_ids: set[str] = field(default_factory=set)
     _owned_queue_items: dict[str, dict[str, str]] = field(default_factory=dict)
     _recent_story_ids: list[str] = field(default_factory=list)
-    _selected_story_id: str | None = None
     _enabled: bool = False
     _store: Store[dict[str, Any]] | None = None
     _schedule_unsub: Any = None
@@ -215,40 +223,11 @@ class AiDjRuntime:
             self.tts_entity_id,
         )
 
-    def _select_feed_story(self, items: list[BriefingItem]) -> BriefingItem | None:
-        """Choose an unseen feed story, or the least-recently-used available one."""
-        feed_items = [
-            item for item in items
-            if item.provider.startswith("feedreader:") and item.identity
-        ]
-        if not feed_items:
-            self._selected_story_id = None
-            return None
-        recent = set(self._recent_story_ids)
-        for item in feed_items:
-            if item.identity not in recent:
-                self._selected_story_id = item.identity
-                return item
-        oldest = min(
-            feed_items,
-            key=lambda item: self._recent_story_ids.index(item.identity)
-            if item.identity in self._recent_story_ids
-            else -1,
+    def _record_story(self, story_id: str | None) -> None:
+        """Commit one story after its briefing side effect succeeds."""
+        self._recent_story_ids = record_story(
+            self._recent_story_ids, story_id, RECENT_STORY_LIMIT
         )
-        self._selected_story_id = oldest.identity
-        return oldest
-
-    def _record_selected_story(self) -> None:
-        """Commit the selected story after successful queue/arming."""
-        if self._selected_story_id is None:
-            return
-        self._recent_story_ids = [
-            story_id for story_id in self._recent_story_ids
-            if story_id != self._selected_story_id
-        ]
-        self._recent_story_ids.append(self._selected_story_id)
-        self._recent_story_ids = self._recent_story_ids[-RECENT_STORY_LIMIT:]
-        self._selected_story_id = None
 
     async def _async_save_controller_state(self) -> None:
         """Persist enabled state and AI DJ-owned queue items."""
@@ -294,20 +273,19 @@ class AiDjRuntime:
             return
         self._preparing_boundary = boundary
         try:
-            message = await self.async_generate_briefing(
+            briefing = await self._async_generate_briefing(
                 self.settings.get(CONF_WEATHER, ""),
                 self.settings.get(CONF_AGENT, ""),
-                consume_story=False,
             )
             state = self.hass.states.get(self.player_entity_id)
             if not self._enabled or state is None or state.state != STATE_PLAYING:
                 return
-            queue_item_id = await self.async_queue_announcement_next(message)
+            queue_item_id = await self.async_queue_announcement_next(briefing.text)
             self._owned_queue_items[queue_item_id] = {
                 "boundary": boundary,
                 "created_at": dt_util.now().isoformat(),
             }
-            self._record_selected_story()
+            self._record_story(briefing.selected_story_id)
             await self._async_save_controller_state()
         except Exception:  # noqa: BLE001 - failed preparation must not interrupt music
             _LOGGER.exception(
@@ -366,14 +344,13 @@ class AiDjRuntime:
         """Return the configured TTS entity."""
         return self.settings[CONF_TTS]
 
-    async def async_generate_briefing(
+    async def _async_generate_briefing(
         self,
         weather_entity_id: str,
         agent_id: str,
         prompt: str | None = None,
-        consume_story: bool = True,
-    ) -> str:
-        """Collect weather and generate a briefing without playback side effects."""
+    ) -> GeneratedBriefing:
+        """Collect facts and generate speech with an explicit story selection."""
         weather_entity_id = (weather_entity_id or self.settings.get(CONF_WEATHER, "")).strip()
         agent_id = (agent_id or self.settings.get(CONF_AGENT, "")).strip()
         if not weather_entity_id or not agent_id:
@@ -400,8 +377,7 @@ class AiDjRuntime:
 
         items, errors = await async_collect_briefing(tuple(providers))
         weather_items = [item for item in items if item.provider == "weather"]
-        self._selected_story_id = None
-        selected_story = self._select_feed_story(items)
+        selected_story = select_feed_story(items, self._recent_story_ids)
         if selected_story is not None:
             items = [
                 item for item in items
@@ -423,10 +399,19 @@ class AiDjRuntime:
         generated = await HaConversationBriefingGenerator(self.hass, agent_id).async_generate(
             full_prompt
         )
-        if consume_story:
-            self._record_selected_story()
-            await self._async_save_controller_state()
-        return generated
+        return GeneratedBriefing(generated, selected_story.identity if selected_story else None)
+
+    async def async_generate_briefing(
+        self,
+        weather_entity_id: str,
+        agent_id: str,
+        prompt: str | None = None,
+    ) -> str:
+        """Collect facts and return generated speech without playback side effects."""
+        briefing = await self._async_generate_briefing(weather_entity_id, agent_id, prompt)
+        self._record_story(briefing.selected_story_id)
+        await self._async_save_controller_state()
+        return briefing.text
 
     async def async_briefing_next(
         self,
@@ -435,16 +420,14 @@ class AiDjRuntime:
         prompt: str | None = None,
     ) -> None:
         """Generate a briefing and arm it for the next track boundary."""
-        message = await self.async_generate_briefing(
-            weather_entity_id, agent_id, prompt, consume_story=False
-        )
+        briefing = await self._async_generate_briefing(weather_entity_id, agent_id, prompt)
         if self.music_assistant_enabled:
-            await self.async_queue_announcement_next(message)
-            self._record_selected_story()
+            await self.async_queue_announcement_next(briefing.text)
+            self._record_story(briefing.selected_story_id)
             await self._async_save_controller_state()
             return
-        await self.async_announce_next(message)
-        self._record_selected_story()
+        await self.async_announce_next(briefing.text)
+        self._record_story(briefing.selected_story_id)
         await self._async_save_controller_state()
 
     async def async_announce_next(self, message: str) -> None:
