@@ -315,15 +315,14 @@ class AiDjOptionsFlow(config_entries.OptionsFlow):
                 ),
                 vol.Required(
                     CONF_AQI_THRESHOLD,
-                    default=current.get(CONF_AQI_THRESHOLD, "100"),
+                    default=current.get(CONF_AQI_THRESHOLD, "101"),
                 ): selector.SelectSelector(
                     {
                         "options": [
-                            {"value": "51", "label": "51+ (moderate or worse)"},
-                            {"value": "100", "label": "100+"},
-                            {"value": "101", "label": "101+ (unhealthy for sensitive groups or worse)"},
-                            {"value": "151", "label": "151+ (unhealthy or worse)"},
-                            {"value": "201", "label": "201+ (very unhealthy or worse)"},
+                            {"value": "51", "label": "51+ (moderate)"},
+                            {"value": "101", "label": "101+ (unhealthy for sensitive groups)"},
+                            {"value": "151", "label": "151+ (unhealthy)"},
+                            {"value": "201", "label": "201+ (very unhealthy)"},
                             {"value": "301", "label": "301+ (hazardous)"},
                         ],
                         "mode": selector.SelectSelectorMode.DROPDOWN,
