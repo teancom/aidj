@@ -407,7 +407,7 @@ class AiDjRuntime:
         feed_entity_ids = self.settings.get(CONF_FEEDS, [])
         calendar_entity_ids = self.settings.get(CONF_CALENDARS, [])
         aqi_entity_id = self.settings.get(CONF_AQI, "").strip()
-        aqi_threshold = float(self.settings.get(CONF_AQI_THRESHOLD, "100"))
+        aqi_threshold = float(self.settings.get(CONF_AQI_THRESHOLD, "101"))
         providers = [WeatherEntityProvider(self.hass, weather_entity_id)]
         providers.extend(
             FeedreaderEventProvider(self.hass, entity_id, name=f"feedreader:{entity_id}")
