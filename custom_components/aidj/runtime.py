@@ -298,6 +298,7 @@ class AiDjRuntime:
             message = await self.async_generate_briefing(
                 self.settings.get(CONF_WEATHER, ""),
                 self.settings.get(CONF_AGENT, ""),
+                consume_story=False,
             )
             state = self.hass.states.get(self.player_entity_id)
             if not self._enabled or state is None or state.state != STATE_PLAYING:
@@ -379,6 +380,7 @@ class AiDjRuntime:
         weather_entity_id: str,
         agent_id: str,
         prompt: str | None = None,
+        consume_story: bool = True,
     ) -> str:
         """Collect weather and generate a briefing without playback side effects."""
         weather_entity_id = (weather_entity_id or self.settings.get(CONF_WEATHER, "")).strip()
@@ -426,13 +428,21 @@ class AiDjRuntime:
         ).strip()
         full_prompt = (
             f"{prompt}\n"
-            "Use only the supplied facts. Preserve local-news headlines exactly "
-            "as written; do not invent, embellish, or substitute news details.\n\n"
+            "Use the supplied facts as source material, but write like a human local radio DJ. "
+            "For local news, explain the development naturally in one or two conversational "
+            "sentences; paraphrase the headline when that sounds better, and do not say "
+            "'there is a headline' or 'in local news, there is a headline'. Do not read RSS "
+            "boilerplate such as 'the post appeared first on'. Keep the facts accurate and "
+            "do not invent details.\n\n"
             f"Facts:\n{facts}"
         )
-        return await HaConversationBriefingGenerator(self.hass, agent_id).async_generate(
+        generated = await HaConversationBriefingGenerator(self.hass, agent_id).async_generate(
             full_prompt
         )
+        if consume_story:
+            self._record_selected_story()
+            await self._async_save_controller_state()
+        return generated
 
     async def async_briefing_next(
         self,
@@ -441,7 +451,9 @@ class AiDjRuntime:
         prompt: str | None = None,
     ) -> None:
         """Generate a briefing and arm it for the next track boundary."""
-        message = await self.async_generate_briefing(weather_entity_id, agent_id, prompt)
+        message = await self.async_generate_briefing(
+            weather_entity_id, agent_id, prompt, consume_story=False
+        )
         if self.music_assistant_enabled:
             await self.async_queue_announcement_next(message)
             self._record_selected_story()

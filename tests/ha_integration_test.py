@@ -1197,7 +1197,9 @@ async def test_controller_prepares_once_at_half_hour_window_and_persists_enabled
         await runtime._async_handle_schedule(boundary)
         await runtime._async_handle_schedule(boundary)
 
-    generate.assert_awaited_once()
+    generate.assert_awaited_once_with(
+        "weather.forecast_home", "conversation.agent", consume_story=False
+    )
     assert (await runtime._store.async_load())["enabled"] is True
     assert runtime._owned_queue_items == {
         "queue-item-1": {
