@@ -40,8 +40,6 @@ from custom_components.aidj.const import (
     SERVICE_ANNOUNCE_NEXT,
     SERVICE_BRIEFING,
     SERVICE_BRIEFING_NEXT,
-    SERVICE_START,
-    SERVICE_STOP,
 )
 from music_assistant_models.enums import QueueOption
 
@@ -972,42 +970,6 @@ async def test_briefing_next_does_not_arm_when_generation_fails(
 
 
 @pytest.mark.asyncio
-async def test_start_and_stop_call_only_the_configured_player(
-    hass: HomeAssistant,
-) -> None:
-    """Station lifecycle services target the configured media player."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        data={
-            CONF_NAME: "Living Room Radio",
-            CONF_PLAYER: "media_player.living_room_streamer_2",
-            CONF_TTS: "tts.openai_tts",
-        },
-    )
-    entry.add_to_hass(hass)
-    hass.states.async_set("media_player.living_room_streamer_2", STATE_IDLE)
-
-    media_play = AsyncMock()
-    media_stop = AsyncMock()
-    hass.services.async_register("media_player", "media_play", media_play)
-    hass.services.async_register("media_player", "media_stop", media_stop)
-    assert await aidj.async_setup(hass, {})
-    assert await aidj.async_setup_entry(hass, entry)
-
-    await hass.services.async_call(DOMAIN, SERVICE_START, blocking=True)
-    await hass.services.async_call(DOMAIN, SERVICE_STOP, blocking=True)
-
-    media_play.assert_awaited_once()
-    media_stop.assert_awaited_once()
-    assert media_play.await_args.args[0].data == {
-        "entity_id": "media_player.living_room_streamer_2"
-    }
-    assert media_stop.await_args.args[0].data == {
-        "entity_id": "media_player.living_room_streamer_2"
-    }
-
-
-@pytest.mark.asyncio
 async def test_native_briefing_next_queues_prepared_tts_url_without_tts_speak(
     hass: HomeAssistant,
 ) -> None:
@@ -1116,4 +1078,88 @@ async def test_native_renderer_keeps_ma_and_ha_credentials_separate(
 
     assert runtime._ma_client.token == "ma-secret"
     assert runtime._ma_tts.access_token == "ha-secret"
+    runtime.async_unload()
+
+
+@pytest.mark.asyncio
+async def test_controller_prepares_once_at_half_hour_window_and_persists_enabled_state(
+    hass: HomeAssistant,
+) -> None:
+    """The station switch enables scheduling without interrupting playback."""
+    from datetime import datetime, timezone
+    from custom_components.aidj.runtime import AiDjRuntime
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+            CONF_MA_URL: "http://ma.local:8095",
+            CONF_MA_TOKEN: "ma-secret",
+            CONF_HA_TOKEN: "ha-secret",
+            CONF_MA_PLAYER: "wiim-player",
+            CONF_WEATHER: "weather.forecast_home",
+            CONF_AGENT: "conversation.agent",
+        },
+    )
+    entry.add_to_hass(hass)
+    player = entry.data[CONF_PLAYER]
+    _set_playing_track(hass, player, "library://track/current", "Current")
+    runtime = AiDjRuntime(hass, entry)
+    runtime._ma_queue = type("Queue", (), {"async_remove": AsyncMock()})()
+
+    generate = AsyncMock(return_value="A fresh briefing.")
+    queue = AsyncMock(return_value="queue-item-1")
+    with patch.object(AiDjRuntime, "async_generate_briefing", generate), patch.object(
+        AiDjRuntime, "async_queue_announcement_next", queue
+    ):
+        await runtime.async_initialize_controller()
+        await runtime.async_set_enabled(True)
+        assert runtime.enabled is True
+        boundary = datetime(2026, 7, 31, 12, 25, tzinfo=timezone.utc)
+        await runtime._async_handle_schedule(boundary)
+        await runtime._async_handle_schedule(boundary)
+
+    generate.assert_awaited_once()
+    assert (await runtime._store.async_load())["enabled"] is True
+    assert runtime._owned_queue_items == {
+        "queue-item-1": {
+            "boundary": "2026-07-31T12:30:00+00:00",
+            "created_at": runtime._owned_queue_items["queue-item-1"]["created_at"],
+        }
+    }
+    runtime.async_unload()
+
+
+@pytest.mark.asyncio
+async def test_controller_removes_owned_items_when_playback_stops(
+    hass: HomeAssistant,
+) -> None:
+    """Stopping playback removes only the station's persisted queue items."""
+    from custom_components.aidj.runtime import AiDjRuntime
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+        },
+    )
+    entry.add_to_hass(hass)
+    player = entry.data[CONF_PLAYER]
+    _set_playing_track(hass, player, "library://track/current", "Current")
+    runtime = AiDjRuntime(hass, entry)
+    runtime._ma_queue = type("Queue", (), {"async_remove": AsyncMock()})()
+    await runtime.async_initialize_controller()
+    runtime._owned_queue_items = {"queue-item-1": {"boundary": "boundary"}}
+    await hass.async_block_till_done()
+
+    hass.states.async_set(player, STATE_IDLE)
+    await hass.async_block_till_done()
+
+    remove = runtime._ma_queue.async_remove
+    remove.assert_awaited_once_with("queue-item-1")
+    assert runtime._owned_queue_items == {}
     runtime.async_unload()

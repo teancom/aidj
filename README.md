@@ -20,8 +20,8 @@ Milestone 1 provides:
 
 - UI-based config flow for one AI DJ station.
 - Options flow for changing the station name, player, and TTS entity.
-- `aidj.start`, which resumes playback on the configured media player.
-- `aidj.stop`, which stops playback on the configured media player.
+- A persistent `switch.<station>` entity that enables the radio-announcer controller without starting or stopping playback.
+- Scheduled queue-backed briefings prepared at `:25` and `:55` for the next half-hour boundary.
 - `aidj.announce`, which sends a supplied message to the configured TTS entity and media player immediately.
 - `aidj.announce_next`, which waits for the configured player to enter a different `playing` track before speaking once.
 - `aidj.queue_add`, which adds one media item to the configured Music Assistant queue without replacing the existing queue.
@@ -29,6 +29,7 @@ Milestone 1 provides:
 - A provider-neutral briefing layer with a Home Assistant entity-state provider and per-provider failure isolation.
 - `aidj.briefing`, a response-only preparation action that collects a selected weather entity and asks a selected HA conversation agent for text without speaking or changing playback.
 - `aidj.briefing_next`, which performs the same generation and arms the validated track-boundary announcement path without speaking immediately.
+- AI DJ-owned queue items are persisted and removed when the station is disabled or playback stops, so stale briefings do not survive a long pause.
 
 Milestone 1 intentionally supports one station per Home Assistant instance. The optional `config_entry_id` field is reserved for the future multi-station configuration and is not needed yet.
 
@@ -70,11 +71,15 @@ data:
 
 This delegates to `music_assistant.play_media` with `enqueue: add`, so the existing queue is preserved. Before adding, AI DJ reads `music_assistant.get_queue` and skips media already in the current or next item. Successfully added IDs are also remembered for the lifetime of the station runtime, preventing repeated calls from appending duplicates.
 
+### Living Room Radio switch
+
+The station switch is the normal user-facing control. Turning it on persists the enabled state but does not start playback; AI DJ waits for the next `:25` or `:55` preparation window and only prepares a break while the configured player is playing. Turning it off cancels future preparation and removes only queue items created by that station. Playback state changes are observed through Home Assistant events, and enabled state plus owned queue-item metadata survive Home Assistant restarts.
+
 ## Design goals
 
 - Use Home Assistant config entries and selectors instead of YAML configuration.
 - Use Home Assistant media-player and TTS abstractions.
-- Use the official `music-assistant-client` library for MA-native queue orchestration. The MA URL, API token, and player ID are optional station settings during the migration; when configured, queue-backed DJ delivery uses add-only MA queue operations rather than HA's generic announcement restore path.
+- Use the official `music-assistant-client` library for MA-native queue orchestration. The MA URL, API token, and player ID are integration-level settings; when configured, queue-backed DJ delivery uses add-only MA queue operations rather than HA's generic announcement restore path.
 - Treat news as a provider interface. The first planned provider is Home Assistant Feedreader; direct RSS parsing is not part of the initial design.
 - Treat AI as optional infrastructure for generated DJ content, but skip an interruption when an AI briefing cannot be generated or validated.
 

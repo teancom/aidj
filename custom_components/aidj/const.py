@@ -7,8 +7,6 @@ SERVICE_ANNOUNCE: Final = "announce"
 SERVICE_ANNOUNCE_NEXT: Final = "announce_next"
 SERVICE_BRIEFING: Final = "briefing"
 SERVICE_BRIEFING_NEXT: Final = "briefing_next"
-SERVICE_START: Final = "start"
-SERVICE_STOP: Final = "stop"
 SERVICE_QUEUE_ADD: Final = "queue_add"
 
 CONF_NAME: Final = "name"

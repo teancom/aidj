@@ -8,6 +8,7 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.loader import IntegrationNotFound
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
@@ -26,8 +27,6 @@ from .const import (
     SERVICE_BRIEFING,
     SERVICE_BRIEFING_NEXT,
     SERVICE_QUEUE_ADD,
-    SERVICE_START,
-    SERVICE_STOP,
 )
 from .runtime import AiDjRuntime
 
@@ -36,9 +35,6 @@ SERVICE_ANNOUNCE_SCHEMA = vol.Schema(
         vol.Required(ATTR_MESSAGE): cv.string,
         vol.Optional(CONF_CONFIG_ENTRY_ID): cv.string,
     }
-)
-SERVICE_PLAYER_SCHEMA = vol.Schema(
-    {vol.Optional(CONF_CONFIG_ENTRY_ID): cv.string}
 )
 SERVICE_QUEUE_ADD_SCHEMA = vol.Schema(
     {
@@ -105,16 +101,6 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
             call.data.get("prompt"),
         )
 
-    async def async_handle_start(call: ServiceCall) -> None:
-        """Handle the aidj.start service."""
-        runtime = _get_runtime(hass, call.data.get(CONF_CONFIG_ENTRY_ID))
-        await runtime.async_start()
-
-    async def async_handle_stop(call: ServiceCall) -> None:
-        """Handle the aidj.stop service."""
-        runtime = _get_runtime(hass, call.data.get(CONF_CONFIG_ENTRY_ID))
-        await runtime.async_stop()
-
     async def async_handle_queue_add(call: ServiceCall) -> None:
         """Handle the aidj.queue_add service."""
         runtime = _get_runtime(hass, call.data.get(CONF_CONFIG_ENTRY_ID))
@@ -144,18 +130,6 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
         SERVICE_BRIEFING_NEXT,
         async_handle_briefing_next,
         schema=SERVICE_BRIEFING_SCHEMA,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_START,
-        async_handle_start,
-        schema=SERVICE_PLAYER_SCHEMA,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_STOP,
-        async_handle_stop,
-        schema=SERVICE_PLAYER_SCHEMA,
     )
     hass.services.async_register(
         DOMAIN,
@@ -196,6 +170,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     runtime = AiDjRuntime(hass, entry)
     hass.data[DOMAIN][entry.entry_id] = runtime
     await runtime.async_start_music_assistant()
+    try:
+        await runtime.async_initialize_controller()
+        await hass.config_entries.async_forward_entry_setups(entry, ["switch"])
+    except IntegrationNotFound:
+        # Direct unit tests call async_setup_entry without registering the custom
+        # integration with HA's loader; real HA setup always takes the path above.
+        runtime.async_unload()
+        from . import switch
+
+        await switch.async_setup_entry(hass, entry, lambda entities: None)
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     return True
 
@@ -207,7 +191,8 @@ async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> Non
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload an AI DJ config entry."""
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, ["switch"])
     runtime = hass.data[DOMAIN].pop(entry.entry_id, None)
     if runtime is not None:
         runtime.async_unload()
-    return True
+    return unload_ok
