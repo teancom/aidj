@@ -56,8 +56,9 @@
           "tts": "TTS entity",
           "weather_entity_id": "Weather entity",
           "agent_id": "Conversation agent",
-          "feed_entity_id": "Local news feed",
-          "calendar_entity_ids": "Calendars"
+          "feed_entity_ids": "Local news feeds",
+          "calendar_entity_ids": "Calendars",
+          "aqi_entity_id": "Air quality sensor"
         }
       }
     }

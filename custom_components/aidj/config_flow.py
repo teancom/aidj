@@ -17,8 +17,9 @@ from music_assistant_client import MusicAssistantClient
 
 from .const import (
     CONF_AGENT,
+    CONF_AQI,
     CONF_CALENDARS,
-    CONF_FEED,
+    CONF_FEEDS,
     CONF_HA_TOKEN,
     CONF_MA_PLAYER,
     CONF_MA_TOKEN,
@@ -293,19 +294,23 @@ class AiDjOptionsFlow(config_entries.OptionsFlow):
                     EntitySelectorConfig(domain="weather")
                 ),
                 vol.Optional(CONF_AGENT, default=current.get(CONF_AGENT, "")): selector.ConversationAgentSelector(),
-                vol.Optional(CONF_FEED, default=current.get(CONF_FEED, "")): selector.EntitySelector(
-                    EntitySelectorConfig(domain="event")
+                vol.Optional(
+                    CONF_FEEDS,
+                    default=current.get(CONF_FEEDS, []),
+                ): selector.EntitySelector(
+                    EntitySelectorConfig(domain="event", multiple=True)
                 ),
                 vol.Optional(
                     CONF_CALENDARS,
-                    default=(
-                        [current[CONF_CALENDARS]]
-                        if isinstance(current.get(CONF_CALENDARS), str)
-                        and current[CONF_CALENDARS].strip()
-                        else current.get(CONF_CALENDARS, [])
-                    ),
+                    default=current.get(CONF_CALENDARS, []),
                 ): selector.EntitySelector(
                     EntitySelectorConfig(domain="calendar", multiple=True)
+                ),
+                vol.Optional(
+                    CONF_AQI,
+                    default=current.get(CONF_AQI, ""),
+                ): selector.EntitySelector(
+                    EntitySelectorConfig(domain="sensor")
                 ),
             }
         )

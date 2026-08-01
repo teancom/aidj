@@ -15,6 +15,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components import aidj
 from custom_components.aidj.music_assistant import MusicAssistantQueueAdapter
 from custom_components.aidj.briefing import (
+    AqiEntityProvider,
     BriefingItem,
     CalendarEventProvider,
     EntityStateProvider,
@@ -27,8 +28,9 @@ from custom_components.aidj.briefing import (
 from custom_components.aidj.const import (
     ATTR_MESSAGE,
     CONF_AGENT,
+    CONF_AQI,
     CONF_CALENDARS,
-    CONF_FEED,
+    CONF_FEEDS,
     CONF_HA_TOKEN,
     CONF_MA_PLAYER,
     CONF_MA_TOKEN,
@@ -329,9 +331,45 @@ async def test_calendar_provider_collects_upcoming_timed_and_all_day_events(
 
 
 @pytest.mark.asyncio
-async def test_calendar_provider_skips_missing_entity(hass: HomeAssistant) -> None:
-    """A calendar that disappeared is an optional-provider no-op."""
+async def test_calendar_provider_skips_missing_and_distant_events(
+    hass: HomeAssistant,
+) -> None:
+    """Calendar relevance keeps only today/tomorrow events."""
+    hass.states.async_set("calendar.home", "on", {"friendly_name": "Home"})
+    get_events = AsyncMock(
+        return_value={
+            "calendar.home": {
+                "events": [
+                    {"summary": "Today", "start": {"date": "2026-07-31"}},
+                    {"summary": "Tomorrow", "start": {"date": "2026-08-01"}},
+                    {"summary": "Later", "start": {"date": "2026-08-05"}},
+                ]
+            }
+        }
+    )
+    hass.services.async_register(
+        "calendar", "get_events", get_events, supports_response=SupportsResponse.ONLY
+    )
+
+    items = await CalendarEventProvider(hass, "calendar.home").async_collect()
+
+    assert [item.title for item in items] == ["Today", "Tomorrow"]
     assert await CalendarEventProvider(hass, "calendar.missing").async_collect() == []
+
+
+@pytest.mark.asyncio
+async def test_aqi_provider_only_returns_relevant_air_quality(
+    hass: HomeAssistant,
+) -> None:
+    """Good AQI is silent; moderate and worse AQI is interpreted."""
+    hass.states.async_set("sensor.outdoor_us_aqi", "50", {"friendly_name": "Outdoor AQI"})
+    assert await AqiEntityProvider(hass, "sensor.outdoor_us_aqi").async_collect() == []
+
+    hass.states.async_set("sensor.outdoor_us_aqi", "125", {"friendly_name": "Outdoor AQI"})
+    items = await AqiEntityProvider(hass, "sensor.outdoor_us_aqi").async_collect()
+
+    assert len(items) == 1
+    assert items[0].summary == "Outdoor AQI: AQI 125, unhealthy for sensitive groups"
 
 
 @pytest.mark.asyncio
@@ -516,8 +554,11 @@ async def test_options_flow_exposes_briefing_source_fields(
     assert result["type"] == "form"
     assert CONF_WEATHER in result["data_schema"].schema
     assert CONF_AGENT in result["data_schema"].schema
+    assert CONF_FEEDS in result["data_schema"].schema
+    assert result["data_schema"].schema[CONF_FEEDS].config["multiple"] is True
     assert CONF_CALENDARS in result["data_schema"].schema
     assert result["data_schema"].schema[CONF_CALENDARS].config["multiple"] is True
+    assert CONF_AQI in result["data_schema"].schema
     assert "music_assistant_url" not in result["data_schema"].schema
     assert "music_assistant_token" not in result["data_schema"].schema
     assert "home_assistant_token" not in result["data_schema"].schema
@@ -1248,7 +1289,7 @@ def test_story_rotation_prefers_unseen_then_bounds_fifo(hass: HomeAssistant) -> 
     entry = MockConfigEntry(domain=DOMAIN, data={CONF_NAME: "Living Room Radio", CONF_PLAYER: "media_player.living_room_streamer_2"})
     runtime = AiDjRuntime(hass, entry)
     stories = [
-        BriefingItem(provider="feedreader", title=f"Story {index}", summary="", identity=f"story-{index}")
+        BriefingItem(provider="feedreader:event.news_archives_voice_of_san_diego", title=f"Story {index}", summary="", identity=f"story-{index}")
         for index in range(12)
     ]
 

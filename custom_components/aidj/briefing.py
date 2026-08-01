@@ -74,6 +74,49 @@ class WeatherEntityProvider:
         ]
 
 
+@dataclass(frozen=True, slots=True)
+class AqiEntityProvider:
+    """Expose AQI only when it reaches the moderate-or-worse range."""
+
+    hass: HomeAssistant
+    entity_id: str
+    relevance_threshold: float = 51
+    name: str = "air_quality"
+
+    async def async_collect(self) -> list[BriefingItem]:
+        """Return an interpreted AQI fact when outdoor air quality matters."""
+        state = self.hass.states.get(self.entity_id)
+        if state is None:
+            return []
+        try:
+            aqi = float(state.state)
+        except (TypeError, ValueError):
+            return []
+        if aqi < self.relevance_threshold:
+            return []
+
+        if aqi <= 100:
+            category = "moderate"
+        elif aqi <= 150:
+            category = "unhealthy for sensitive groups"
+        elif aqi <= 200:
+            category = "unhealthy"
+        elif aqi <= 300:
+            category = "very unhealthy"
+        else:
+            category = "hazardous"
+        friendly_name = state.attributes.get("friendly_name", self.entity_id)
+        return [
+            BriefingItem(
+                provider=self.name,
+                title=str(friendly_name),
+                summary=f"{friendly_name}: AQI {aqi:g}, {category}",
+                occurred_at=state.last_updated,
+                source=self.entity_id,
+            )
+        ]
+
+
 def _feed_item_identity(entry: dict[str, Any], feed_source: str) -> str:
     """Return a stable identity for one Feedreader item."""
     for key in ("link", "id"):
@@ -203,11 +246,12 @@ class EntityStateProvider:
 
 @dataclass(frozen=True, slots=True)
 class CalendarEventProvider:
-    """Expose upcoming events from one Home Assistant calendar entity."""
+    """Expose only near-term events from one Home Assistant calendar entity."""
 
     hass: HomeAssistant
     entity_id: str
     days: int = 7
+    relevance_days: int = 2
     max_results: int = 20
     name: str = "calendar"
 
@@ -239,11 +283,33 @@ class CalendarEventProvider:
         if not isinstance(events, list):
             return []
 
+        cutoff = start + timedelta(days=self.relevance_days)
         friendly_name = state.attributes.get("friendly_name", self.entity_id)
         items: list[BriefingItem] = []
-        for event in events[: self.max_results]:
+        for event in events:
             if not isinstance(event, dict):
                 continue
+            start_value = event.get("start")
+            event_start: datetime | None = None
+            if isinstance(start_value, dict):
+                raw_start = start_value.get("dateTime")
+                if isinstance(raw_start, str):
+                    try:
+                        event_start = datetime.fromisoformat(raw_start)
+                    except ValueError:
+                        continue
+                elif isinstance(start_value.get("date"), str):
+                    try:
+                        event_start = datetime.fromisoformat(start_value["date"]).replace(
+                            tzinfo=start.tzinfo
+                        )
+                    except ValueError:
+                        continue
+            if event_start is None or event_start > cutoff:
+                continue
+            if len(items) >= self.max_results:
+                break
+
             summary = event.get("summary")
             if not isinstance(summary, str) or not summary.strip():
                 continue

@@ -18,6 +18,7 @@ from homeassistant.helpers.storage import Store
 from .music_assistant import HaTtsUrlRenderer, MusicAssistantClient, MusicAssistantQueueAdapter
 
 from .briefing import (
+    AqiEntityProvider,
     BriefingItem,
     CalendarEventProvider,
     FeedreaderEventProvider,
@@ -28,8 +29,9 @@ from .briefing import (
 )
 from .const import (
     CONF_AGENT,
+    CONF_AQI,
     CONF_CALENDARS,
-    CONF_FEED,
+    CONF_FEEDS,
     CONF_HA_TOKEN,
     CONF_MA_PLAYER,
     CONF_MA_TOKEN,
@@ -215,7 +217,7 @@ class AiDjRuntime:
         """Choose an unseen feed story, or the least-recently-used available one."""
         feed_items = [
             item for item in items
-            if item.provider == "feedreader" and item.identity
+            if item.provider.startswith("feedreader:") and item.identity
         ]
         if not feed_items:
             self._selected_story_id = None
@@ -401,18 +403,20 @@ class AiDjRuntime:
                 "weather_entity_id and agent_id must not be empty"
             )
 
-        feed_entity_id = self.settings.get(CONF_FEED, "").strip()
+        feed_entity_ids = self.settings.get(CONF_FEEDS, [])
         calendar_entity_ids = self.settings.get(CONF_CALENDARS, [])
-        if isinstance(calendar_entity_ids, str):
-            calendar_entity_ids = [calendar_entity_ids] if calendar_entity_ids.strip() else []
+        aqi_entity_id = self.settings.get(CONF_AQI, "").strip()
         providers = [WeatherEntityProvider(self.hass, weather_entity_id)]
-        if feed_entity_id:
-            providers.append(FeedreaderEventProvider(self.hass, feed_entity_id))
+        providers.extend(
+            FeedreaderEventProvider(self.hass, entity_id, name=f"feedreader:{entity_id}")
+            for entity_id in feed_entity_ids
+        )
         providers.extend(
             CalendarEventProvider(self.hass, entity_id, name=f"calendar:{entity_id}")
             for entity_id in calendar_entity_ids
-            if isinstance(entity_id, str) and entity_id.strip()
         )
+        if aqi_entity_id:
+            providers.append(AqiEntityProvider(self.hass, aqi_entity_id))
         providers.append(QueueProvider(self.hass, self.player_entity_id))
 
         items, errors = await async_collect_briefing(tuple(providers))
@@ -422,7 +426,7 @@ class AiDjRuntime:
         if selected_story is not None:
             items = [
                 item for item in items
-                if item.provider != "feedreader"
+                if not item.provider.startswith("feedreader:")
             ] + [selected_story]
         if errors:
             _LOGGER.info(
