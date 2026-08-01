@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -147,6 +148,87 @@ async def test_weather_provider_normalizes_common_weather_attributes(
         "humidity: 46%, wind: 7.15mph"
     )
     assert items[0].source == "weather.forecast_home"
+
+
+@pytest.mark.asyncio
+async def test_weather_provider_includes_today_forecast_before_noon(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Morning weather context includes current conditions and today's forecast."""
+    hass.states.async_set(
+        "weather.forecast_home",
+        "sunny",
+        {
+            "friendly_name": "Forecast Home",
+            "temperature": 72,
+            "temperature_unit": "°F",
+            "humidity": 45,
+            "wind_speed": 4,
+            "wind_speed_unit": "mph",
+        },
+    )
+    forecast = AsyncMock(
+        return_value={
+            "weather.forecast_home": {
+                "forecast": [
+                    {"datetime": "2026-08-01", "condition": "sunny", "temperature": 80, "templow": 61, "precipitation_probability": 5},
+                    {"datetime": "2026-08-02", "condition": "cloudy", "temperature": 75, "templow": 60},
+                ]
+            }
+        }
+    )
+    hass.services.async_register("weather", "get_forecasts", forecast, supports_response=SupportsResponse.ONLY)
+    monkeypatch.setattr(
+        "custom_components.aidj.briefing.datetime",
+        type("DateTime", (), {"now": staticmethod(lambda: datetime(2026, 8, 1, 9, tzinfo=timezone.utc))}),
+    )
+
+    items = await WeatherEntityProvider(hass, "weather.forecast_home").async_collect()
+
+    assert "temperature: 72°F" in items[0].summary
+    assert "forecast today" in items[0].summary
+    assert "forecast tomorrow" not in items[0].summary
+    assert forecast.await_args.args[0].data == {"type": "daily", "entity_id": "weather.forecast_home"}
+
+
+@pytest.mark.asyncio
+async def test_weather_provider_includes_tomorrow_after_noon(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Afternoon weather context includes today's and tomorrow's forecast."""
+    hass.states.async_set("weather.forecast_home", "sunny", {"friendly_name": "Forecast Home"})
+    forecast = AsyncMock(
+        return_value={"weather.forecast_home": {"forecast": [{"condition": "sunny"}, {"condition": "cloudy"}]}}
+    )
+    hass.services.async_register("weather", "get_forecasts", forecast, supports_response=SupportsResponse.ONLY)
+    monkeypatch.setattr(
+        "custom_components.aidj.briefing.datetime",
+        type("DateTime", (), {"now": staticmethod(lambda: datetime(2026, 8, 1, 21, tzinfo=timezone.utc))}),
+    )
+
+    items = await WeatherEntityProvider(hass, "weather.forecast_home").async_collect()
+
+    assert "forecast today" in items[0].summary
+    assert "forecast tomorrow" in items[0].summary
+
+
+@pytest.mark.asyncio
+async def test_weather_provider_keeps_current_conditions_when_forecast_fails(
+    hass: HomeAssistant,
+) -> None:
+    """A forecast outage does not discard current weather context."""
+    hass.states.async_set("weather.forecast_home", "rainy", {"friendly_name": "Forecast Home", "temperature": 65})
+    hass.services.async_register(
+        "weather", "get_forecasts", AsyncMock(side_effect=RuntimeError("unavailable"))
+    )
+
+    items = await WeatherEntityProvider(hass, "weather.forecast_home").async_collect()
+
+    assert len(items) == 1
+    assert "conditions: rainy" in items[0].summary
+    assert "temperature: 65" in items[0].summary
 
 
 @pytest.mark.asyncio
@@ -602,7 +684,7 @@ async def test_options_flow_exposes_briefing_source_fields(
     assert CONF_AQI in result["data_schema"].schema
     assert CONF_AQI_THRESHOLD in result["data_schema"].schema
     assert any(
-        option["value"] == "100"
+        option["value"] == "101"
         for option in result["data_schema"].schema[CONF_AQI_THRESHOLD].config["options"]
     )
     assert "music_assistant_url" not in result["data_schema"].schema

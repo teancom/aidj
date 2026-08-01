@@ -47,7 +47,7 @@ class WeatherEntityProvider:
     name: str = "weather"
 
     async def async_collect(self) -> list[BriefingItem]:
-        """Return one compact weather fact when the entity is available."""
+        """Return current conditions plus the relevant daily forecast."""
         state = self.hass.states.get(self.entity_id)
         if state is None:
             return []
@@ -63,6 +63,40 @@ class WeatherEntityProvider:
         if (wind_speed := attributes.get("wind_speed")) is not None:
             unit = attributes.get("wind_speed_unit", "")
             details.append(f"wind: {wind_speed}{unit}")
+
+        now = datetime.now().astimezone()
+        forecast_days = 1 if now.hour < 12 else 2
+        try:
+            response = await self.hass.services.async_call(
+                "weather",
+                "get_forecasts",
+                {"type": "daily", "entity_id": self.entity_id},
+                blocking=True,
+                return_response=True,
+            )
+        except Exception as err:  # noqa: BLE001 - forecast is optional context
+            _LOGGER.info("Weather forecast unavailable for %s: %s", self.entity_id, err)
+            response = None
+
+        forecast = response.get(self.entity_id, {}).get("forecast", []) if isinstance(response, dict) else []
+        if isinstance(forecast, list):
+            for index, period in enumerate(forecast[:forecast_days]):
+                if not isinstance(period, dict):
+                    continue
+                period_date = period.get("datetime") or period.get("date")
+                label = "today" if index == 0 else "tomorrow"
+                forecast_details = [label]
+                if period_date:
+                    forecast_details.append(f"date: {period_date}")
+                if (condition := period.get("condition")):
+                    forecast_details.append(f"conditions: {condition}")
+                if (high := period.get("temperature")) is not None:
+                    forecast_details.append(f"high: {high}{attributes.get('temperature_unit', '')}")
+                if (low := period.get("templow")) is not None:
+                    forecast_details.append(f"low: {low}{attributes.get('temperature_unit', '')}")
+                if (precipitation := period.get("precipitation_probability")) is not None:
+                    forecast_details.append(f"precipitation probability: {precipitation}%")
+                details.append("forecast " + ", ".join(str(value) for value in forecast_details))
 
         return [
             BriefingItem(
