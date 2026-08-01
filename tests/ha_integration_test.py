@@ -17,6 +17,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components import aidj
 from custom_components.aidj.music_assistant import MusicAssistantQueueAdapter
 from custom_components.aidj.music_context import fallback_queue_context
+from custom_components.aidj.briefing_assembly import build_briefing_providers
 from custom_components.aidj.prompt import build_briefing_prompt
 from custom_components.aidj.story import record_story, select_feed_story
 from custom_components.aidj.briefing import (
@@ -233,6 +234,35 @@ async def test_weather_provider_keeps_current_conditions_when_forecast_fails(
     assert len(items) == 1
     assert "conditions: rainy" in items[0].summary
     assert "temperature: 65" in items[0].summary
+
+
+def test_briefing_provider_assembly_preserves_source_order_and_settings(
+    hass: HomeAssistant,
+) -> None:
+    """Station assembly builds weather, feeds, calendars, AQI, then queue."""
+    providers = build_briefing_providers(
+        hass,
+        {
+            CONF_FEEDS: ["event.local_news"],
+            CONF_CALENDARS: ["calendar.david", "calendar.home_calendar"],
+            CONF_AQI: "sensor.outdoor_us_aqi",
+            CONF_AQI_THRESHOLD: "101",
+        },
+        weather_entity_id="weather.forecast_home",
+        player_entity_id="media_player.living_room_streamer_2",
+        music_assistant_client=None,
+    )
+
+    assert [provider.name for provider in providers] == [
+        "weather",
+        "feedreader:event.local_news",
+        "calendar:calendar.david",
+        "calendar:calendar.home_calendar",
+        "air_quality",
+        "music_assistant_queue",
+    ]
+    assert providers[4].relevance_threshold == 101
+    assert providers[5].player_entity_id == "media_player.living_room_streamer_2"
 
 
 @pytest.mark.asyncio

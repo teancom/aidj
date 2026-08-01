@@ -19,16 +19,8 @@ from homeassistant.helpers.storage import Store
 
 from .music_assistant import HaTtsUrlRenderer, MusicAssistantClient, MusicAssistantQueueAdapter
 
-from .briefing import (
-    AqiEntityProvider,
-    BriefingItem,
-    CalendarEventProvider,
-    FeedreaderEventProvider,
-    HaConversationBriefingGenerator,
-    QueueProvider,
-    WeatherEntityProvider,
-    async_collect_briefing,
-)
+from .briefing import BriefingItem, HaConversationBriefingGenerator
+from .briefing_assembly import async_collect_station_briefing
 from .const import (
     CONF_AGENT,
     CONF_AQI,
@@ -358,25 +350,15 @@ class AiDjRuntime:
                 "weather_entity_id and agent_id must not be empty"
             )
 
-        feed_entity_ids = self.settings.get(CONF_FEEDS, [])
-        calendar_entity_ids = self.settings.get(CONF_CALENDARS, [])
-        aqi_entity_id = self.settings.get(CONF_AQI, "").strip()
-        aqi_threshold = float(self.settings.get(CONF_AQI_THRESHOLD, "101"))
-        providers = [WeatherEntityProvider(self.hass, weather_entity_id)]
-        providers.extend(
-            FeedreaderEventProvider(self.hass, entity_id, name=f"feedreader:{entity_id}")
-            for entity_id in feed_entity_ids
+        collection = await async_collect_station_briefing(
+            self.hass,
+            self.settings,
+            weather_entity_id=weather_entity_id,
+            player_entity_id=self.player_entity_id,
+            music_assistant_client=self._ma_client,
         )
-        providers.extend(
-            CalendarEventProvider(self.hass, entity_id, name=f"calendar:{entity_id}")
-            for entity_id in calendar_entity_ids
-        )
-        if aqi_entity_id:
-            providers.append(AqiEntityProvider(self.hass, aqi_entity_id, aqi_threshold))
-        providers.append(QueueProvider(self.hass, self.player_entity_id, self._ma_client))
-
-        items, errors = await async_collect_briefing(tuple(providers))
-        weather_items = [item for item in items if item.provider == "weather"]
+        items = collection.items
+        errors = collection.errors
         selected_story = select_feed_story(items, self._recent_story_ids)
         if selected_story is not None:
             items = [
@@ -389,7 +371,7 @@ class AiDjRuntime:
                 self.name,
                 ", ".join(f"{name}: {error}" for name, error in errors.items()),
             )
-        if not weather_items:
+        if not collection.weather_available:
             _LOGGER.warning("Briefing weather entity is unavailable: %s", weather_entity_id)
             raise ServiceValidationError(
                 f"Weather entity does not exist: {weather_entity_id}"
