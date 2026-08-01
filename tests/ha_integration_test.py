@@ -1131,6 +1131,55 @@ async def test_native_renderer_keeps_ma_and_ha_credentials_separate(
     runtime.async_unload()
 
 
+@pytest.mark.asyncio
+async def test_music_assistant_listener_timeout_does_not_block_setup(
+    hass: HomeAssistant,
+) -> None:
+    """A slow MA websocket listener is a background task, not a startup blocker."""
+    from custom_components.aidj import runtime as runtime_module
+    from custom_components.aidj.runtime import AiDjRuntime
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+            CONF_MA_URL: "http://ma.local:8095",
+            CONF_MA_TOKEN: "ma-secret",
+            CONF_HA_TOKEN: "ha-secret",
+            CONF_MA_PLAYER: "wiim-player",
+        },
+    )
+    entry.add_to_hass(hass)
+    runtime = AiDjRuntime(hass, entry)
+
+    class SlowClient:
+        def __init__(self, url, session, *, token):
+            self.url = url
+            self.token = token
+
+        async def start_listening(self, *, init_ready):
+            await asyncio.sleep(3600)
+
+        async def disconnect(self):
+            return None
+
+    async def timeout_wait(awaitable, timeout):
+        awaitable.close()
+        raise TimeoutError
+
+    with patch.object(runtime_module, "MusicAssistantClient", SlowClient), patch(
+        "custom_components.aidj.runtime.asyncio.wait_for",
+        new=timeout_wait,
+    ):
+        await runtime.async_start_music_assistant()
+
+    assert runtime._ma_listener_task is not None
+    assert runtime._ma_listener_task not in hass._tasks
+    runtime.async_unload()
+
+
 def test_story_rotation_prefers_unseen_then_bounds_fifo(hass: HomeAssistant) -> None:
     """Story rotation avoids recent items and keeps only the bounded FIFO."""
     from custom_components.aidj.runtime import AiDjRuntime

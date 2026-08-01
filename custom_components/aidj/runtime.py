@@ -185,10 +185,19 @@ class AiDjRuntime:
             token=settings[CONF_MA_TOKEN].strip(),
         )
         init_ready = asyncio.Event()
-        self._ma_listener_task = self.hass.async_create_task(
-            self._ma_client.start_listening(init_ready=init_ready)
+        self._ma_listener_task = self.entry.async_create_background_task(
+            self.hass,
+            self._ma_client.start_listening(init_ready=init_ready),
+            name="music_assistant_listener",
         )
-        await init_ready.wait()
+        try:
+            await asyncio.wait_for(init_ready.wait(), timeout=15)
+        except TimeoutError:
+            _LOGGER.warning(
+                "Music Assistant did not become ready within 15 seconds for station %s; "
+                "continuing setup while the background listener reconnects",
+                self.name,
+            )
         self._ma_queue = MusicAssistantQueueAdapter(
             self._ma_client,
             settings[CONF_MA_PLAYER].strip(),
@@ -542,7 +551,10 @@ class AiDjRuntime:
             self._ma_listener_task.cancel()
             self._ma_listener_task = None
         if self._ma_client is not None:
-            self.hass.async_create_task(self._ma_client.disconnect())
+            self.hass.async_create_background_task(
+                self._ma_client.disconnect(),
+                "music_assistant_disconnect",
+            )
             self._ma_client = None
             self._ma_queue = None
 
