@@ -408,8 +408,10 @@ async def test_queue_provider_collects_native_three_track_window(hass: HomeAssis
     ).async_collect()
 
     assert [item.title for item in items] == ["Music context"]
+    assert '"current"' in items[0].summary
     assert '"previous"' in items[0].summary
     assert '"next"' in items[0].summary
+    assert '"track": "Track 3"' in items[0].summary
     assert '"genre": "micro-genre"' in items[0].summary
     assert '"year": 2002' in items[0].summary
 
@@ -588,24 +590,20 @@ async def test_aqi_provider_only_returns_relevant_air_quality(
     assert items[0].summary == "Outdoor AQI: AQI 125, unhealthy for sensitive groups"
 
 
-def test_build_briefing_prompt_preserves_exact_default_contract() -> None:
-    """Prompt construction is explicit and stable for future wording edits."""
-    items = [BriefingItem(provider="weather", title="Weather", summary="Weather: sunny")]
-
-    assert build_briefing_prompt(items) == (
-        "Write a concise, friendly radio DJ briefing for an announcement "
-        "that plays after the current song has finished. Refer to the completed song "
-        "in the past tense (for example, 'You were listening to...'), not 'You're listening to...'.\n"
-        "Use the supplied facts as source material, but write like a human local radio DJ. "
-        "The structured music context is optional flavor: do not mention it at every break, "
-        "and only comment on it when an observation is genuinely interesting and natural. "
-        "For local news, explain the development naturally in one or two conversational "
-        "sentences; paraphrase the headline when that sounds better, and do not say "
-        "'there is a headline' or 'in local news, there is a headline'. Do not read RSS "
-        "boilerplate such as 'the post appeared first on'. Keep the facts accurate and "
-        "do not invent details.\n\n"
-        "Facts:\n- Weather: sunny"
+def test_build_briefing_prompt_requires_specific_music_references() -> None:
+    """Prompt instructions require completed and upcoming track references."""
+    item = BriefingItem(
+        provider="music_assistant_queue",
+        title="Music context",
+        summary='{"current": {"track": "Current Song"}, "next": [{"track": "Next Song"}]}',
     )
+
+    prompt = build_briefing_prompt([item])
+
+    assert "identify the completed song or artist" in prompt
+    assert "coming-up-next reference" in prompt
+    assert "Current Song" in prompt
+    assert "Next Song" in prompt
 
 
 def test_build_briefing_prompt_uses_custom_opening_only() -> None:
