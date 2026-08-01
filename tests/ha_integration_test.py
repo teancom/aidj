@@ -15,6 +15,7 @@ from homeassistant.helpers import event as event_helper
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components import aidj
+from custom_components.aidj.ha_music_assistant import HaMusicAssistantQueue
 from custom_components.aidj.music_assistant import MusicAssistantQueueAdapter
 from custom_components.aidj.music_context import fallback_queue_context
 from custom_components.aidj.briefing_assembly import build_briefing_providers
@@ -97,6 +98,37 @@ async def test_music_assistant_queue_adapter_inserts_next_without_replacing() ->
     assert track.uri == "builtin://sound_effect/http://ha.local/tts/clip.mp3"
     assert track.media_type is MediaType.SOUND_EFFECT
     assert track.provider_mappings.pop().audio_format.content_type is ContentType.MP3
+
+
+@pytest.mark.asyncio
+async def test_ha_music_assistant_queue_targets_configured_player(
+    hass: HomeAssistant,
+) -> None:
+    """HA fallback queue operations ignore other players in the response."""
+    hass.states.async_set("media_player.living_room_streamer_2", STATE_IDLE)
+    get_queue = AsyncMock(
+        return_value={
+            "service_response": {
+                "media_player.other": {
+                    "next_item": {"media_item": {"uri": "library://track/duplicate"}}
+                },
+                "media_player.living_room_streamer_2": {
+                    "next_item": {"media_item": {"uri": "library://track/target"}}
+                },
+            }
+        }
+    )
+    play_media = AsyncMock()
+    hass.services.async_register(
+        "music_assistant", "get_queue", get_queue, supports_response=SupportsResponse.ONLY
+    )
+    hass.services.async_register("music_assistant", "play_media", play_media)
+
+    queue = HaMusicAssistantQueue(hass, "media_player.living_room_streamer_2")
+    assert await queue.async_add("library://track/duplicate") is True
+    assert await queue.async_add("library://track/target") is False
+    play_media.assert_awaited_once()
+    assert play_media.await_args.args[0].data["media_id"] == "library://track/duplicate"
 
 
 @pytest.mark.asyncio

@@ -17,6 +17,7 @@ from homeassistant.helpers import event as event_helper
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
 
+from .ha_music_assistant import HaMusicAssistantQueue
 from .music_assistant import HaTtsUrlRenderer, MusicAssistantClient, MusicAssistantQueueAdapter
 
 from .announcement import AnnouncementController
@@ -45,37 +46,6 @@ from .story import record_story, select_feed_story
 _LOGGER = logging.getLogger(__name__)
 
 
-def queue_media_ids(queue: Any, player_entity_id: str) -> set[str]:
-    """Extract media URIs and queue item IDs for one player from an HA response."""
-    if not isinstance(queue, dict):
-        return set()
-
-    queue_data = queue.get("service_response", queue)
-    if not isinstance(queue_data, dict):
-        return set()
-
-    player_queue = queue_data.get(player_entity_id, queue_data)
-    if not isinstance(player_queue, dict):
-        return set()
-
-    media_ids: set[str] = set()
-    for item_key in ("current_item", "next_item"):
-        item = player_queue.get(item_key)
-        if not isinstance(item, dict):
-            continue
-        for key in ("queue_item_id", "media_item_id"):
-            value = item.get(key)
-            if isinstance(value, str):
-                media_ids.add(value)
-        media_item = item.get("media_item")
-        if isinstance(media_item, dict):
-            uri = media_item.get("uri")
-            if isinstance(uri, str):
-                media_ids.add(uri)
-
-    return media_ids
-
-
 @dataclass(frozen=True, slots=True)
 class GeneratedBriefing:
     """Generated speech plus the optional story selected for this briefing."""
@@ -90,7 +60,7 @@ class AiDjRuntime:
 
     hass: HomeAssistant
     entry: ConfigEntry
-    _owned_media_ids: set[str] = field(default_factory=set)
+    _ha_queue: HaMusicAssistantQueue = field(init=False)
     _owned_queue_items: dict[str, dict[str, str]] = field(default_factory=dict)
     _recent_story_ids: list[str] = field(default_factory=list)
     _enabled: bool = False
@@ -111,6 +81,7 @@ class AiDjRuntime:
             self.player_entity_id,
             self._async_deliver_announcement,
         )
+        self._ha_queue = HaMusicAssistantQueue(self.hass, self.player_entity_id)
 
     @property
     def settings(self) -> dict[str, Any]:
@@ -449,51 +420,11 @@ class AiDjRuntime:
 
     async def async_get_queue(self) -> Any:
         """Read the active Music Assistant queue through Home Assistant."""
-        self._require_player()
-        try:
-            return await self.hass.services.async_call(
-                "music_assistant",
-                "get_queue",
-                target={"entity_id": self.player_entity_id},
-                blocking=True,
-                return_response=True,
-            )
-        except Exception as err:
-            raise HomeAssistantError(
-                f"Unable to read the Music Assistant queue for {self.player_entity_id}: {err}"
-            ) from err
+        return await self._ha_queue.async_get_queue()
 
     async def async_queue_add(self, media_id: str) -> bool:
         """Add one media item unless it is already present in the active queue."""
-        media_id = media_id.strip()
-        if not media_id:
-            raise ServiceValidationError("The media ID must not be empty")
-
-        if media_id in self._owned_media_ids:
-            return False
-
-        queue = await self.async_get_queue()
-        if media_id in queue_media_ids(queue, self.player_entity_id):
-            self._owned_media_ids.add(media_id)
-            return False
-
-        self._require_player()
-        try:
-            await self.hass.services.async_call(
-                "music_assistant",
-                "play_media",
-                {"media_id": media_id, "enqueue": "add"},
-                target={"entity_id": self.player_entity_id},
-                blocking=True,
-            )
-        except Exception as err:
-            raise HomeAssistantError(
-                f"Unable to add media to the Music Assistant queue for "
-                f"{self.player_entity_id}: {err}"
-            ) from err
-
-        self._owned_media_ids.add(media_id)
-        return True
+        return await self._ha_queue.async_add(media_id)
 
     def _require_player(self) -> None:
         """Raise when the configured media player is not available in HA."""
