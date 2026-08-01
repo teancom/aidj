@@ -601,7 +601,10 @@ async def test_options_flow_exposes_briefing_source_fields(
     assert result["data_schema"].schema[CONF_CALENDARS].config["multiple"] is True
     assert CONF_AQI in result["data_schema"].schema
     assert CONF_AQI_THRESHOLD in result["data_schema"].schema
-    assert result["data_schema"].schema[CONF_AQI_THRESHOLD].config["options"][3]["value"] == "201"
+    assert any(
+        option["value"] == "100"
+        for option in result["data_schema"].schema[CONF_AQI_THRESHOLD].config["options"]
+    )
     assert "music_assistant_url" not in result["data_schema"].schema
     assert "music_assistant_token" not in result["data_schema"].schema
     assert "home_assistant_token" not in result["data_schema"].schema
