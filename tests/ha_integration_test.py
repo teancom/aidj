@@ -11,10 +11,12 @@ from homeassistant.config_entries import SOURCE_USER
 from homeassistant.const import STATE_IDLE, STATE_PLAYING
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import event as event_helper
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components import aidj
 from custom_components.aidj.music_assistant import MusicAssistantQueueAdapter
+from custom_components.aidj.prompt import build_briefing_prompt
 from custom_components.aidj.briefing import (
     AqiEntityProvider,
     BriefingItem,
@@ -180,8 +182,8 @@ async def test_weather_provider_includes_today_forecast_before_noon(
     )
     hass.services.async_register("weather", "get_forecasts", forecast, supports_response=SupportsResponse.ONLY)
     monkeypatch.setattr(
-        "custom_components.aidj.briefing.datetime",
-        type("DateTime", (), {"now": staticmethod(lambda: datetime(2026, 8, 1, 9, tzinfo=timezone.utc))}),
+        "custom_components.aidj.briefing.dt_util.now",
+        lambda: datetime(2026, 8, 1, 9, tzinfo=timezone.utc),
     )
 
     items = await WeatherEntityProvider(hass, "weather.forecast_home").async_collect()
@@ -204,8 +206,8 @@ async def test_weather_provider_includes_tomorrow_after_noon(
     )
     hass.services.async_register("weather", "get_forecasts", forecast, supports_response=SupportsResponse.ONLY)
     monkeypatch.setattr(
-        "custom_components.aidj.briefing.datetime",
-        type("DateTime", (), {"now": staticmethod(lambda: datetime(2026, 8, 1, 21, tzinfo=timezone.utc))}),
+        "custom_components.aidj.briefing.dt_util.now",
+        lambda: datetime(2026, 8, 1, 21, tzinfo=timezone.utc),
     )
 
     items = await WeatherEntityProvider(hass, "weather.forecast_home").async_collect()
@@ -495,6 +497,36 @@ async def test_aqi_provider_only_returns_relevant_air_quality(
     assert items[0].summary == "Outdoor AQI: AQI 125, unhealthy for sensitive groups"
 
 
+def test_build_briefing_prompt_preserves_exact_default_contract() -> None:
+    """Prompt construction is explicit and stable for future wording edits."""
+    items = [BriefingItem(provider="weather", title="Weather", summary="Weather: sunny")]
+
+    assert build_briefing_prompt(items) == (
+        "Write a concise, friendly radio DJ briefing for an announcement "
+        "that plays after the current song has finished. Refer to the completed song "
+        "in the past tense (for example, 'You were listening to...'), not 'You're listening to...'.\n"
+        "Use the supplied facts as source material, but write like a human local radio DJ. "
+        "The structured music context is optional flavor: do not mention it at every break, "
+        "and only comment on it when an observation is genuinely interesting and natural. "
+        "For local news, explain the development naturally in one or two conversational "
+        "sentences; paraphrase the headline when that sounds better, and do not say "
+        "'there is a headline' or 'in local news, there is a headline'. Do not read RSS "
+        "boilerplate such as 'the post appeared first on'. Keep the facts accurate and "
+        "do not invent details.\n\n"
+        "Facts:\n- Weather: sunny"
+    )
+
+
+def test_build_briefing_prompt_uses_custom_opening_only() -> None:
+    """Custom prompt text retains the shared style and facts contract."""
+    item = BriefingItem(provider="weather", title="Weather", summary="Weather: sunny")
+
+    prompt = build_briefing_prompt([item], "Speak like a surfer.")
+
+    assert prompt.startswith("Speak like a surfer.\n")
+    assert "Facts:\n- Weather: sunny" in prompt
+
+
 @pytest.mark.asyncio
 async def test_conversation_generator_extracts_plain_speech(
     hass: HomeAssistant,
@@ -768,12 +800,18 @@ async def test_announce_next_waits_for_a_different_playing_track(
     assert await aidj.async_setup(hass, {})
     assert await aidj.async_setup_entry(hass, entry)
 
-    await hass.services.async_call(
-        DOMAIN,
-        SERVICE_ANNOUNCE_NEXT,
-        {ATTR_MESSAGE: "Coming up next."},
-        blocking=True,
-    )
+    with patch(
+        "custom_components.aidj.runtime.event_helper.async_track_state_change_event",
+        wraps=event_helper.async_track_state_change_event,
+    ) as track_state:
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_ANNOUNCE_NEXT,
+            {ATTR_MESSAGE: "Coming up next."},
+            blocking=True,
+        )
+        track_state.assert_called_once()
+        assert track_state.call_args.args[1] == player
     _set_playing_track(hass, "sensor.unrelated", "ignored", "Ignored")
     _set_playing_track(hass, player, "library://track/current", "Current")
     await hass.async_block_till_done()

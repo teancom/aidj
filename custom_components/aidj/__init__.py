@@ -13,6 +13,7 @@ from homeassistant.helpers import config_validation as cv
 
 from .const import (
     ATTR_MESSAGE,
+    ATTR_PROMPT,
     CONF_CONFIG_ENTRY_ID,
     DOMAIN,
     ATTR_MEDIA_ID,
@@ -44,9 +45,9 @@ SERVICE_QUEUE_ADD_SCHEMA = vol.Schema(
 )
 SERVICE_BRIEFING_SCHEMA = vol.Schema(
     {
-        vol.Optional("weather_entity_id", default=""): cv.string,
-        vol.Optional("agent_id", default=""): cv.string,
-        vol.Optional("prompt"): cv.string,
+        vol.Optional(CONF_WEATHER, default=""): cv.string,
+        vol.Optional(CONF_AGENT, default=""): cv.string,
+        vol.Optional(ATTR_PROMPT): cv.string,
         vol.Optional(CONF_CONFIG_ENTRY_ID): cv.string,
     }
 )
@@ -88,7 +89,7 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
         text = await runtime.async_generate_briefing(
             call.data.get(CONF_WEATHER, ""),
             call.data.get(CONF_AGENT, ""),
-            call.data.get("prompt"),
+            call.data.get(ATTR_PROMPT),
         )
         return {"text": text}
 
@@ -98,7 +99,7 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
         await runtime.async_briefing_next(
             call.data.get(CONF_WEATHER, ""),
             call.data.get(CONF_AGENT, ""),
-            call.data.get("prompt"),
+            call.data.get(ATTR_PROMPT),
         )
 
     async def async_handle_queue_add(call: ServiceCall) -> None:

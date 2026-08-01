@@ -8,8 +8,10 @@ from datetime import datetime, timedelta
 import logging
 from typing import Any
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_PLAYING
 from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.util import dt as dt_util
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import event as event_helper
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -43,6 +45,7 @@ from .const import (
     CONF_WEATHER,
     RECENT_STORY_LIMIT,
 )
+from .prompt import build_briefing_prompt
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -51,13 +54,11 @@ _LOGGER = logging.getLogger(__name__)
 def _track_identity(state: Any) -> str | None:
     """Return a stable identity for the currently playing media item."""
     attributes = getattr(state, "attributes", {})
-    for key in ("media_content_id", "media_artist", "media_title"):
-        value = attributes.get(key)
-        if value:
-            return ":".join(str(attributes.get(part, "")) for part in (
-                "media_content_id", "media_artist", "media_title"
-            ))
-    return None
+    parts = tuple(
+        str(attributes.get(key, ""))
+        for key in ("media_content_id", "media_artist", "media_title")
+    )
+    return ":".join(parts) if any(parts) else None
 
 
 def queue_media_ids(queue: Any) -> set[str]:
@@ -96,7 +97,7 @@ class AiDjRuntime:
     """Runtime object for one configured AI DJ station."""
 
     hass: HomeAssistant
-    entry: object
+    entry: ConfigEntry
     _owned_media_ids: set[str] = field(default_factory=set)
     _owned_queue_items: dict[str, dict[str, str]] = field(default_factory=dict)
     _recent_story_ids: list[str] = field(default_factory=list)
@@ -114,7 +115,7 @@ class AiDjRuntime:
     _ma_tts: HaTtsUrlRenderer | None = None
 
     @property
-    def settings(self) -> dict[str, str]:
+    def settings(self) -> dict[str, Any]:
         """Return current config data with options overriding initial values."""
         return {**self.entry.data, **self.entry.options}
 
@@ -269,22 +270,6 @@ class AiDjRuntime:
             return
         # The next :25/:55 callback will prepare a fresh briefing.
 
-    async def _async_schedule_next_boundary(self) -> None:
-        """Prepare the next half-hour break when playback is active."""
-        if not self._enabled or not self.music_assistant_enabled:
-            return
-        state = self.hass.states.get(self.player_entity_id)
-        if state is None or state.state != STATE_PLAYING:
-            return
-        now = datetime.now().astimezone()
-        if now.minute < 25:
-            target = now.replace(minute=30, second=0, microsecond=0)
-        elif now.minute < 55:
-            target = (now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1))
-        else:
-            target = (now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1))
-        await self._async_prepare_boundary(target)
-
     async def _async_handle_schedule(self, now: datetime) -> None:
         """Prepare a break at :25 for :30, or :55 for the next :00."""
         if now.minute not in (25, 55):
@@ -320,7 +305,7 @@ class AiDjRuntime:
             queue_item_id = await self.async_queue_announcement_next(message)
             self._owned_queue_items[queue_item_id] = {
                 "boundary": boundary,
-                "created_at": datetime.now().astimezone().isoformat(),
+                "created_at": dt_util.now().isoformat(),
             }
             self._record_selected_story()
             await self._async_save_controller_state()
@@ -364,14 +349,6 @@ class AiDjRuntime:
                 "Music Assistant native transport is not configured for this station"
             )
         media_uri = await self._ma_tts.async_render(message)
-        return await self._ma_queue.async_insert_next(media_uri)
-
-    async def async_insert_prepared_media_next(self, media_uri: str) -> str:
-        """Insert a prepared audio URI as the next MA queue item."""
-        if self._ma_queue is None:
-            raise ServiceValidationError(
-                "Music Assistant native transport is not configured for this station"
-            )
         return await self._ma_queue.async_insert_next(media_uri)
 
     @property
@@ -442,27 +419,7 @@ class AiDjRuntime:
                 f"Weather entity does not exist: {weather_entity_id}"
             )
 
-        facts = "\n".join(f"- {item.summary}" for item in items)
-        prompt = (
-            prompt
-            or (
-                "Write a concise, friendly radio DJ weather briefing for an announcement "
-                "that plays after the current song has finished. Refer to the completed song "
-                "in the past tense (for example, 'You were listening to...'), not 'You're listening to...'."
-            )
-        ).strip()
-        full_prompt = (
-            f"{prompt}\n"
-            "Use the supplied facts as source material, but write like a human local radio DJ. "
-            "The structured music context is optional flavor: do not mention it at every break, "
-            "and only comment on it when an observation is genuinely interesting and natural. "
-            "For local news, explain the development naturally in one or two conversational "
-            "sentences; paraphrase the headline when that sounds better, and do not say "
-            "'there is a headline' or 'in local news, there is a headline'. Do not read RSS "
-            "boilerplate such as 'the post appeared first on'. Keep the facts accurate and "
-            "do not invent details.\n\n"
-            f"Facts:\n{facts}"
-        )
+        full_prompt = build_briefing_prompt(items, prompt)
         generated = await HaConversationBriefingGenerator(self.hass, agent_id).async_generate(
             full_prompt
         )
@@ -498,8 +455,11 @@ class AiDjRuntime:
 
         self._require_player()
         state = self.hass.states.get(self.player_entity_id)
-        assert state is not None
-        if state.state != "playing":
+        if state is None:
+            raise ServiceValidationError(
+                f"Configured media player does not exist: {self.player_entity_id}"
+            )
+        if state.state != STATE_PLAYING:
             raise ServiceValidationError(
                 "announce_next requires the configured media player to be playing"
             )
@@ -513,8 +473,10 @@ class AiDjRuntime:
         if self._announcement_unsub is not None:
             self._announcement_unsub()
         self._pending_announcement = (baseline, message)
-        self._announcement_unsub = self.hass.bus.async_listen(
-            "state_changed", self._async_handle_state_changed
+        self._announcement_unsub = event_helper.async_track_state_change_event(
+            self.hass,
+            self.player_entity_id,
+            self._async_handle_state_changed,
         )
 
     @callback
@@ -527,7 +489,7 @@ class AiDjRuntime:
             return
 
         new_state = data.get("new_state")
-        if new_state is None or new_state.state != "playing":
+        if new_state is None or new_state.state != STATE_PLAYING:
             return
 
         baseline, message = self._pending_announcement

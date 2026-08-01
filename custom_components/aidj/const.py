@@ -26,6 +26,11 @@ CONF_CONFIG_ENTRY_ID: Final = "config_entry_id"
 
 ATTR_MESSAGE: Final = "message"
 ATTR_MEDIA_ID: Final = "media_id"
+ATTR_PROMPT: Final = "prompt"
+
+PROVIDER_WEATHER: Final = "weather"
+PROVIDER_FEEDREADER_PREFIX: Final = "feedreader:"
+
 
 DEFAULT_NAME: Final = "AI DJ"
 DEFAULT_MA_URL: Final = "http://homeassistant.local:8095"

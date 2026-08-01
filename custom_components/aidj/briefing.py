@@ -11,6 +11,7 @@ from typing import Any, Protocol
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
+from homeassistant.util import dt as dt_util
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 
@@ -64,7 +65,7 @@ class WeatherEntityProvider:
             unit = attributes.get("wind_speed_unit", "")
             details.append(f"wind: {wind_speed}{unit}")
 
-        now = datetime.now().astimezone()
+        now = dt_util.now()
         forecast_days = 1 if now.hour < 12 else 2
         try:
             response = await self.hass.services.async_call(
@@ -296,15 +297,15 @@ class CalendarEventProvider:
         if state is None:
             return []
 
-        start = datetime.now().astimezone()
-        end = start + timedelta(days=self.days)
+        window_start = dt_util.now()
+        window_end = window_start + timedelta(days=self.days)
         response = await self.hass.services.async_call(
             "calendar",
             "get_events",
             {
                 "entity_id": self.entity_id,
-                "start_date_time": start.isoformat(),
-                "end_date_time": end.isoformat(),
+                "start_date_time": window_start.isoformat(),
+                "end_date_time": window_end.isoformat(),
             },
             blocking=True,
             return_response=True,
@@ -318,7 +319,7 @@ class CalendarEventProvider:
         if not isinstance(events, list):
             return []
 
-        cutoff = start + timedelta(days=self.relevance_days)
+        cutoff = window_start + timedelta(days=self.relevance_days)
         friendly_name = state.attributes.get("friendly_name", self.entity_id)
         items: list[BriefingItem] = []
         for event in events:
@@ -336,7 +337,7 @@ class CalendarEventProvider:
                 elif isinstance(start_value.get("date"), str):
                     try:
                         event_start = datetime.fromisoformat(start_value["date"]).replace(
-                            tzinfo=start.tzinfo
+                            tzinfo=window_start.tzinfo
                         )
                     except ValueError:
                         continue
@@ -348,17 +349,12 @@ class CalendarEventProvider:
             summary = event.get("summary")
             if not isinstance(summary, str) or not summary.strip():
                 continue
-            start_value = event.get("start")
             end_value = event.get("end")
             details = f"{friendly_name}: {summary.strip()}"
             if isinstance(start_value, dict) and start_value.get("date"):
                 details += f" (all day on {start_value['date']})"
-                occurred_at = None
             elif isinstance(start_value, dict) and start_value.get("dateTime"):
                 details += f" (starts {start_value['dateTime']})"
-                occurred_at = None
-            else:
-                occurred_at = None
             if isinstance(end_value, dict) and end_value.get("dateTime"):
                 details += f", ends {end_value['dateTime']}"
             location = event.get("location")
@@ -478,7 +474,7 @@ class QueueProvider:
                 queue_items = [player_queue["current_item"]]
             if not queue_items and key == "next_items" and player_queue.get("next_item"):
                 queue_items = [player_queue["next_item"]]
-            for offset, item in enumerate(queue_items[-3:] if label == "previous" else queue_items[:3], 1):
+            for item in queue_items[-3:] if label == "previous" else queue_items[:3]:
                 context = self._track_context(item)
                 if not context["track"]:
                     continue

@@ -110,21 +110,3 @@ class MusicAssistantQueueAdapter:
         if queue is None:
             return
         await self.client.player_queues.delete_item(queue.queue_id, queue_item_id)
-
-    async def async_get_current_and_next(self) -> dict[str, Any]:
-        """Return the current and next MA queue items for briefing context."""
-        queue = await self.client.player_queues.get_active_queue(self.player_id)
-        if queue is None:
-            return {}
-        return {
-            "queue_id": queue.queue_id,
-            "current_item": queue.current_item,
-            "next_item": queue.next_item,
-            "current_item_id": (
-                queue.current_item.queue_item_id if queue.current_item is not None else None
-            ),
-            "next_item_id": (
-                queue.next_item.queue_item_id if queue.next_item is not None else None
-            ),
-            "elapsed_time": queue.elapsed_time,
-        }
