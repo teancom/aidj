@@ -16,6 +16,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components import aidj
 from custom_components.aidj.music_assistant import MusicAssistantQueueAdapter
+from custom_components.aidj.music_context import fallback_queue_context
 from custom_components.aidj.prompt import build_briefing_prompt
 from custom_components.aidj.briefing import (
     AqiEntityProvider,
@@ -278,6 +279,33 @@ async def test_queue_provider_normalizes_current_and_next_tracks(
     assert "\"track\": \"Next Song\"" in items[0].summary
     call: ServiceCall = get_queue.await_args.args[0]
     assert call.data == {"entity_id": "media_player.living_room_streamer_2"}
+
+
+def test_fallback_queue_context_preserves_bounded_side_order() -> None:
+    """The pure fallback parser keeps the last previous and first next tracks."""
+    context = fallback_queue_context(
+        {
+            "previous_items": [
+                {"media_item": {"name": "Previous 1"}},
+                {"media_item": {"name": "Previous 2"}},
+                {"media_item": {"name": "Previous 3"}},
+                {"media_item": {"name": "Previous 4"}},
+            ],
+            "next_items": [
+                {"media_item": {"name": "Next 1"}},
+                {"media_item": {"name": "Next 2"}},
+                {"media_item": {"name": "Next 3"}},
+                {"media_item": {"name": "Next 4"}},
+            ],
+        }
+    )
+
+    assert [item["track"] for item in context["previous"]] == [
+        "Previous 2", "Previous 3", "Previous 4"
+    ]
+    assert [item["track"] for item in context["next"]] == [
+        "Next 1", "Next 2", "Next 3"
+    ]
 
 
 @pytest.mark.asyncio
@@ -968,6 +996,11 @@ async def test_queue_add_skips_media_already_in_current_or_next_item(
     get_queue = AsyncMock(
         return_value={
             "service_response": {
+                "media_player.other_player": {
+                    "current_item": {
+                        "media_item": {"uri": "library://track/next"}
+                    }
+                },
                 "media_player.living_room_streamer_2": {
                     "current_item": {
                         "media_item": {"uri": "library://track/current"}

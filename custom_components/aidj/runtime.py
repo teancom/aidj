@@ -61,8 +61,8 @@ def _track_identity(state: Any) -> str | None:
     return ":".join(parts) if any(parts) else None
 
 
-def queue_media_ids(queue: Any) -> set[str]:
-    """Extract media URIs and queue item IDs from an HA queue response."""
+def queue_media_ids(queue: Any, player_entity_id: str) -> set[str]:
+    """Extract media URIs and queue item IDs for one player from an HA response."""
     if not isinstance(queue, dict):
         return set()
 
@@ -70,7 +70,7 @@ def queue_media_ids(queue: Any) -> set[str]:
     if not isinstance(queue_data, dict):
         return set()
 
-    player_queue = next(iter(queue_data.values()), queue_data)
+    player_queue = queue_data.get(player_entity_id, queue_data)
     if not isinstance(player_queue, dict):
         return set()
 
@@ -564,7 +564,7 @@ class AiDjRuntime:
             return False
 
         queue = await self.async_get_queue()
-        if media_id in queue_media_ids(queue):
+        if media_id in queue_media_ids(queue, self.player_entity_id):
             self._owned_media_ids.add(media_id)
             return False
 
