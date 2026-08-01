@@ -41,7 +41,7 @@ from custom_components.aidj.const import (
     SERVICE_BRIEFING,
     SERVICE_BRIEFING_NEXT,
 )
-from music_assistant_models.enums import QueueOption
+from music_assistant_models.enums import ContentType, MediaType, QueueOption
 
 
 
@@ -49,10 +49,13 @@ from music_assistant_models.enums import QueueOption
 async def test_music_assistant_queue_adapter_inserts_next_without_replacing() -> None:
     """Native MA transport uses one add-only NEXT queue operation."""
     class Media:
+        item_id = "http://ha.local/tts/clip.mp3"
         uri = "builtin://track/http://ha.local/tts/clip.mp3"
 
     class Item:
         queue_item_id = "aidj-item-1"
+        name = "AI DJ Announcement"
+        uri = Media.uri
         media_item = Media()
 
     class Queue:
@@ -72,11 +75,16 @@ async def test_music_assistant_queue_adapter_inserts_next_without_replacing() ->
     )
 
     assert item_id == "aidj-item-1"
-    queues.play_media.assert_awaited_once_with(
-        queue_id="queue-1",
-        media=["builtin://track/http://ha.local/tts/clip.mp3"],
-        option=QueueOption.NEXT,
-    )
+    queues.play_media.assert_awaited_once()
+    call = queues.play_media.await_args.kwargs
+    assert call["queue_id"] == "queue-1"
+    assert call["option"] is QueueOption.NEXT
+    track = call["media"][0]
+    assert track.name == "AI DJ Announcement"
+    assert track.item_id == "http://ha.local/tts/clip.mp3"
+    assert track.uri == "builtin://sound_effect/http://ha.local/tts/clip.mp3"
+    assert track.media_type is MediaType.SOUND_EFFECT
+    assert track.provider_mappings.pop().audio_format.content_type is ContentType.MP3
 
 
 @pytest.mark.asyncio
@@ -174,7 +182,11 @@ async def test_queue_provider_normalizes_current_and_next_tracks(
     ).async_collect()
 
     assert [(item.title, item.summary, item.source) for item in items] == [
-        ("Now playing", "Now playing: Current Song by Current Artist", "library://track/current"),
+        (
+            "Previously playing",
+            "Previously playing: Current Song by Current Artist",
+            "library://track/current",
+        ),
         ("Up next", "Up next: Next Song by Next Artist", "library://track/next"),
     ]
     call: ServiceCall = get_queue.await_args.args[0]

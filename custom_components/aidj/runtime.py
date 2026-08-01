@@ -366,7 +366,11 @@ class AiDjRuntime:
         facts = "\n".join(f"- {item.summary}" for item in items)
         prompt = (
             prompt
-            or "Write a concise, friendly radio DJ weather briefing."
+            or (
+                "Write a concise, friendly radio DJ weather briefing for an announcement "
+                "that plays after the current song has finished. Refer to the completed song "
+                "in the past tense (for example, 'You were listening to...'), not 'You're listening to...'."
+            )
         ).strip()
         full_prompt = (
             f"{prompt}\n"

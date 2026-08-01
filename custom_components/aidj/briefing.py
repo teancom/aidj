@@ -173,7 +173,7 @@ class QueueProvider:
             return []
 
         items: list[BriefingItem] = []
-        for label, key in (("Now playing", "current_item"), ("Up next", "next_item")):
+        for label, key in (("Previously playing", "current_item"), ("Up next", "next_item")):
             item = player_queue.get(key)
             if not isinstance(item, dict):
                 continue

@@ -7,7 +7,9 @@ from typing import Any
 
 from aiohttp import ClientSession
 from music_assistant_client import MusicAssistantClient
-from music_assistant_models.enums import QueueOption
+from music_assistant_models.enums import ContentType, QueueOption
+from music_assistant_models.media_items import AudioFormat, ProviderMapping
+from music_assistant_models.media_items.media_item import SoundEffect
 
 
 @dataclass(slots=True)
@@ -60,13 +62,27 @@ class MusicAssistantQueueAdapter:
         if queue is None:
             raise RuntimeError(f"No active Music Assistant queue for {self.player_id}")
 
-        # A bare HTTP URL is parsed by MA as MediaType.UNKNOWN. Address it
-        # through the built-in provider so MA resolves it as a playable track
-        # and can route it to the configured player controller.
-        ma_uri = f"builtin://track/{media_uri}"
+        # Passing a bare URL (or a builtin URI) makes MA probe the TTS endpoint. Because
+        # the endpoint has no duration metadata, MA classifies it as a radio item; when it
+        # ends, the player becomes idle instead of advancing to the existing queue. Send an
+        # explicit finite SoundEffect with a stable title and a builtin provider mapping instead.
+        tts_track = SoundEffect(
+            item_id=media_uri,
+            provider="builtin",
+            name="AI DJ Announcement",
+            duration=1,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=media_uri,
+                    provider_domain="builtin",
+                    provider_instance="builtin",
+                    audio_format=AudioFormat(content_type=ContentType.MP3),
+                )
+            },
+        )
         await self.client.player_queues.play_media(
             queue_id=queue.queue_id,
-            media=[ma_uri],
+            media=[tts_track],
             option=QueueOption.NEXT,
         )
 
@@ -74,11 +90,18 @@ class MusicAssistantQueueAdapter:
         matching = [
             item
             for item in items
-            if getattr(item, "media_item", None) is not None
-            and getattr(item.media_item, "uri", None) == ma_uri
+            if getattr(item, "queue_item_id", None)
+            and (
+                getattr(item, "name", "") == "AI DJ Announcement"
+                or getattr(item, "uri", None) == tts_track.uri
+                or (
+                    getattr(item, "media_item", None) is not None
+                    and getattr(item.media_item, "item_id", None) == media_uri
+                )
+            )
         ]
         if not matching:
-            raise RuntimeError(f"Music Assistant did not expose inserted queue item {ma_uri}")
+            raise RuntimeError("Music Assistant did not expose the inserted AI DJ queue item")
         return matching[-1].queue_item_id
 
     async def async_remove(self, queue_item_id: str) -> None:
