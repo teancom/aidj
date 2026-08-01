@@ -2,38 +2,61 @@
   "config": {
     "step": {
       "user": {
-        "title": "Set up AI DJ",
-        "description": "Choose the Home Assistant player/TTS entities and the Music Assistant server/player used for queue-backed DJ segments.",
+        "title": "Connect Music Assistant",
+        "description": "Enter the integration-level Music Assistant and Home Assistant credentials. AI DJ will use the MA token to discover players by name.",
+        "data": {
+          "music_assistant_url": "Music Assistant server URL",
+          "music_assistant_token": "Music Assistant API token",
+          "home_assistant_token": "Home Assistant TTS URL token"
+        }
+      },
+      "station": {
+        "title": "Set up AI DJ station",
+        "description": "Choose the Home Assistant playback/TTS entities and the Music Assistant player.",
         "data": {
           "name": "Station name",
           "player": "Home Assistant media player",
           "tts": "TTS entity",
+          "music_assistant_player": "Music Assistant player"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconnect Music Assistant",
+        "description": "Update the integration-level credentials. AI DJ will refresh the available player names from Music Assistant.",
+        "data": {
           "music_assistant_url": "Music Assistant server URL",
           "music_assistant_token": "Music Assistant API token",
-          "home_assistant_token": "Home Assistant TTS URL token",
-          "music_assistant_player": "Music Assistant player ID"
+          "home_assistant_token": "Home Assistant TTS URL token"
+        }
+      },
+      "reconfigure_player": {
+        "title": "Choose Music Assistant player",
+        "data": {
+          "music_assistant_player": "Music Assistant player"
         }
       }
     },
+    "error": {
+      "cannot_connect": "Could not connect to Music Assistant or authenticate with the supplied token.",
+      "no_players": "Music Assistant returned no players."
+    },
     "abort": {
-      "already_configured": "An AI DJ station is already configured."
+      "already_configured": "An AI DJ station is already configured.",
+      "reconfigure_successful": "Music Assistant connection updated."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Configure AI DJ",
-        "description": "Change the station name, media player, TTS entity, Music Assistant connection, weather source, or conversation agent.",
+        "title": "Configure AI DJ station",
+        "description": "Change this station's name, Home Assistant entities, weather source, or conversation agent. Music Assistant credentials are configured at the integration level.",
         "data": {
           "name": "Station name",
           "player": "Home Assistant media player",
           "tts": "TTS entity",
-          "music_assistant_url": "Music Assistant server URL",
-          "music_assistant_token": "Music Assistant API token",
-          "home_assistant_token": "Home Assistant TTS URL token",
-          "music_assistant_player": "Music Assistant player ID",
           "weather_entity_id": "Weather entity",
-          "agent_id": "Conversation agent"
+          "agent_id": "Conversation agent",
+          "feed_entity_id": "Local news feed"
         }
       }
     }

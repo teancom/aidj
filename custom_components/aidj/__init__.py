@@ -16,6 +16,10 @@ from .const import (
     DOMAIN,
     ATTR_MEDIA_ID,
     CONF_AGENT,
+    CONF_HA_TOKEN,
+    CONF_MA_PLAYER,
+    CONF_MA_TOKEN,
+    CONF_MA_URL,
     CONF_WEATHER,
     SERVICE_ANNOUNCE,
     SERVICE_ANNOUNCE_NEXT,
@@ -159,6 +163,31 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
         async_handle_queue_add,
         schema=SERVICE_QUEUE_ADD_SCHEMA,
     )
+    return True
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Move legacy per-station MA settings into integration data."""
+    if entry.version >= 2:
+        return True
+    legacy = entry.options
+    updates = {
+        key: legacy[key]
+        for key in (CONF_MA_URL, CONF_MA_TOKEN, CONF_HA_TOKEN, CONF_MA_PLAYER)
+        if key in legacy
+    }
+    remaining_options = {
+        key: value for key, value in legacy.items() if key not in updates
+    }
+    if updates:
+        hass.config_entries.async_update_entry(
+            entry,
+            data={**entry.data, **updates},
+            options=remaining_options,
+            version=2,
+        )
+    else:
+        hass.config_entries.async_update_entry(entry, version=2)
     return True
 
 

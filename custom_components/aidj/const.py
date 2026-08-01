@@ -27,3 +27,4 @@ ATTR_MESSAGE: Final = "message"
 ATTR_MEDIA_ID: Final = "media_id"
 
 DEFAULT_NAME: Final = "AI DJ"
+DEFAULT_MA_URL: Final = "http://homeassistant.local:8095"

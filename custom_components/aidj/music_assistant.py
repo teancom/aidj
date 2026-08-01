@@ -62,7 +62,7 @@ class MusicAssistantQueueAdapter:
 
         await self.client.player_queues.play_media(
             queue_id=queue.queue_id,
-            media=media_uri,
+            media=[media_uri],
             option=QueueOption.NEXT,
         )
 

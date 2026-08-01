@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.config_entries import SOURCE_USER
@@ -26,6 +26,10 @@ from custom_components.aidj.const import (
     ATTR_MESSAGE,
     CONF_AGENT,
     CONF_FEED,
+    CONF_HA_TOKEN,
+    CONF_MA_PLAYER,
+    CONF_MA_TOKEN,
+    CONF_MA_URL,
     CONF_NAME,
     CONF_PLAYER,
     CONF_TTS,
@@ -72,7 +76,7 @@ async def test_music_assistant_queue_adapter_inserts_next_without_replacing() ->
     assert item_id == "aidj-item-1"
     queues.play_media.assert_awaited_once_with(
         queue_id="queue-1",
-        media="http://ha.local/tts/clip.mp3",
+        media=["http://ha.local/tts/clip.mp3"],
         option=QueueOption.NEXT,
     )
 
@@ -297,53 +301,92 @@ async def test_briefing_collection_isolates_provider_failures(
 
 
 @pytest.mark.asyncio
-async def test_config_flow_creates_entry_and_rejects_duplicate(
+async def test_config_flow_discovers_named_ma_players_and_rejects_duplicate(
     hass: HomeAssistant, enable_custom_integrations: None
 ) -> None:
-    """The UI flow stores station settings and enforces one station for now."""
+    """Setup authenticates once, then stores the selected MA player ID."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": SOURCE_USER},
     )
     assert result["type"] == "form"
     assert result["step_id"] == "user"
+    user_schema = result["data_schema"].schema
+    assert user_schema["music_assistant_token"].config["type"] == "password"
+    assert user_schema["home_assistant_token"].config["type"] == "password"
 
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"],
-        {
-            CONF_NAME: "Living Room Radio",
-            CONF_PLAYER: "media_player.living_room_streamer",
-            CONF_TTS: "tts.openai_tts",
-        },
-    )
+    with patch(
+        "custom_components.aidj.config_flow._async_get_ma_players",
+        new=AsyncMock(return_value=[{"value": "wiim-player", "label": "Living Room Streamer (WiiM Pro)"}]),
+    ), patch(
+        "custom_components.aidj.runtime.AiDjRuntime.async_start_music_assistant",
+        new=AsyncMock(),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                "music_assistant_url": "http://ma.local:8095",
+                "music_assistant_token": "ma-secret",
+                "home_assistant_token": "ha-secret",
+            },
+        )
+        assert result["type"] == "form"
+        assert result["step_id"] == "station"
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                CONF_NAME: "Living Room Radio",
+                CONF_PLAYER: "media_player.living_room_streamer",
+                CONF_TTS: "tts.openai_tts",
+                "music_assistant_player": "wiim-player",
+            },
+        )
+
     await hass.async_block_till_done()
-
     assert result["type"] == "create_entry"
     assert result["title"] == "Living Room Radio"
-    assert result["data"] == {
-        CONF_NAME: "Living Room Radio",
-        CONF_PLAYER: "media_player.living_room_streamer",
-        CONF_TTS: "tts.openai_tts",
-        "music_assistant_url": "http://homeassistant.local:8095",
-        "music_assistant_token": "",
-        "home_assistant_token": "",
-        "music_assistant_player": "",
-    }
+    assert result["data"]["music_assistant_player"] == "wiim-player"
+    assert result["data"]["music_assistant_token"] == "ma-secret"
+    assert result["data"]["home_assistant_token"] == "ha-secret"
 
     duplicate = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": SOURCE_USER},
     )
-    duplicate = await hass.config_entries.flow.async_configure(
-        duplicate["flow_id"],
-        {
-            CONF_NAME: "Second Radio",
-            CONF_PLAYER: "media_player.living_room_streamer_2",
-            CONF_TTS: "tts.home_assistant_cloud",
+    assert duplicate["type"] == "form"
+
+
+@pytest.mark.asyncio
+async def test_migrates_legacy_credentials_into_entry_data(
+    hass: HomeAssistant, enable_custom_integrations: None
+) -> None:
+    """Legacy options are moved to entry data while station options remain local."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=1,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer",
+            CONF_TTS: "tts.openai_tts",
+        },
+        options={
+            CONF_MA_URL: "http://ma.local:8095",
+            CONF_MA_TOKEN: "ma-secret",
+            CONF_HA_TOKEN: "ha-secret",
+            CONF_MA_PLAYER: "wiim-player",
+            CONF_WEATHER: "weather.forecast_home",
         },
     )
-    assert duplicate["type"] == "abort"
-    assert duplicate["reason"] == "already_configured"
+    entry.add_to_hass(hass)
+
+    assert await aidj.async_migrate_entry(hass, entry)
+
+    assert entry.version == 2
+    assert entry.data[CONF_MA_URL] == "http://ma.local:8095"
+    assert entry.data[CONF_MA_TOKEN] == "ma-secret"
+    assert entry.data[CONF_HA_TOKEN] == "ha-secret"
+    assert entry.data[CONF_MA_PLAYER] == "wiim-player"
+    assert entry.options == {CONF_WEATHER: "weather.forecast_home"}
 
 
 @pytest.mark.asyncio
@@ -366,9 +409,10 @@ async def test_options_flow_exposes_briefing_source_fields(
     assert result["type"] == "form"
     assert CONF_WEATHER in result["data_schema"].schema
     assert CONF_AGENT in result["data_schema"].schema
-    assert "music_assistant_url" in result["data_schema"].schema
-    assert "music_assistant_token" in result["data_schema"].schema
-    assert "music_assistant_player" in result["data_schema"].schema
+    assert "music_assistant_url" not in result["data_schema"].schema
+    assert "music_assistant_token" not in result["data_schema"].schema
+    assert "home_assistant_token" not in result["data_schema"].schema
+    assert "music_assistant_player" not in result["data_schema"].schema
 
 
 @pytest.mark.asyncio
