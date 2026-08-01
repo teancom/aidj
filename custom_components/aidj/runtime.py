@@ -30,6 +30,7 @@ from .briefing import (
 from .const import (
     CONF_AGENT,
     CONF_AQI,
+    CONF_AQI_THRESHOLD,
     CONF_CALENDARS,
     CONF_FEEDS,
     CONF_HA_TOKEN,
@@ -406,6 +407,7 @@ class AiDjRuntime:
         feed_entity_ids = self.settings.get(CONF_FEEDS, [])
         calendar_entity_ids = self.settings.get(CONF_CALENDARS, [])
         aqi_entity_id = self.settings.get(CONF_AQI, "").strip()
+        aqi_threshold = float(self.settings.get(CONF_AQI_THRESHOLD, "100"))
         providers = [WeatherEntityProvider(self.hass, weather_entity_id)]
         providers.extend(
             FeedreaderEventProvider(self.hass, entity_id, name=f"feedreader:{entity_id}")
@@ -416,8 +418,8 @@ class AiDjRuntime:
             for entity_id in calendar_entity_ids
         )
         if aqi_entity_id:
-            providers.append(AqiEntityProvider(self.hass, aqi_entity_id))
-        providers.append(QueueProvider(self.hass, self.player_entity_id))
+            providers.append(AqiEntityProvider(self.hass, aqi_entity_id, aqi_threshold))
+        providers.append(QueueProvider(self.hass, self.player_entity_id, self._ma_client))
 
         items, errors = await async_collect_briefing(tuple(providers))
         weather_items = [item for item in items if item.provider == "weather"]
@@ -452,6 +454,8 @@ class AiDjRuntime:
         full_prompt = (
             f"{prompt}\n"
             "Use the supplied facts as source material, but write like a human local radio DJ. "
+            "The structured music context is optional flavor: do not mention it at every break, "
+            "and only comment on it when an observation is genuinely interesting and natural. "
             "For local news, explain the development naturally in one or two conversational "
             "sentences; paraphrase the headline when that sounds better, and do not say "
             "'there is a headline' or 'in local news, there is a headline'. Do not read RSS "

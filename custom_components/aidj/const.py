@@ -21,6 +21,7 @@ CONF_AGENT: Final = "agent_id"
 CONF_FEEDS: Final = "feed_entity_ids"
 CONF_CALENDARS: Final = "calendar_entity_ids"
 CONF_AQI: Final = "aqi_entity_id"
+CONF_AQI_THRESHOLD: Final = "aqi_relevance_threshold"
 CONF_CONFIG_ENTRY_ID: Final = "config_entry_id"
 
 ATTR_MESSAGE: Final = "message"

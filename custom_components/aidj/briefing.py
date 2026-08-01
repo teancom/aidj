@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import hashlib
+import json
 import logging
 from typing import Any, Protocol
 
@@ -345,14 +346,79 @@ class CalendarEventProvider:
 
 @dataclass(frozen=True, slots=True)
 class QueueProvider:
-    """Expose current and next Music Assistant queue items through HA."""
+    """Expose a structured ±3 Music Assistant queue window through HA."""
 
     hass: HomeAssistant
     player_entity_id: str
+    music_assistant_client: Any = None
     name: str = "music_assistant_queue"
 
+    @staticmethod
+    def _track_context(item: Any) -> dict[str, Any]:
+        """Normalize one MA queue item into nullable DJ context fields."""
+        media_item = item.get("media_item") if isinstance(item, dict) else None
+        if not isinstance(media_item, dict):
+            return {"artist": None, "album": None, "track": None, "genre": None, "year": None}
+        artists = media_item.get("artists") or []
+        artist_names = [
+            artist.get("name")
+            for artist in artists
+            if isinstance(artist, dict) and isinstance(artist.get("name"), str)
+        ]
+        album = media_item.get("album")
+        album_name = album.get("name") if isinstance(album, dict) else None
+        metadata = media_item.get("metadata") or {}
+        genres = metadata.get("genres") if isinstance(metadata, dict) else None
+        genre = ", ".join(sorted(genres)) if isinstance(genres, (list, set, tuple)) else None
+        year = album.get("year") if isinstance(album, dict) else None
+        return {
+            "artist": ", ".join(artist_names) or None,
+            "album": album_name if isinstance(album_name, str) else None,
+            "track": media_item.get("name") or item.get("name"),
+            "genre": genre,
+            "year": year if isinstance(year, int) else None,
+        }
+
+    async def _async_collect_native(self) -> list[BriefingItem]:
+        """Collect the absolute ±3 window from the official MA client."""
+        queue = await self.music_assistant_client.player_queues.get_active_queue(
+            self.player_entity_id
+        )
+        if queue is None or queue.current_index is None:
+            return []
+        queue_items = await self.music_assistant_client.player_queues.get_queue_items(
+            queue.queue_id
+        )
+        current_index = queue.current_index
+        selected = [
+            ("previous", item)
+            for item in queue_items
+            if current_index - 3 <= item.index < current_index
+        ] + [
+            ("next", item)
+            for item in queue_items
+            if current_index < item.index <= current_index + 3
+        ]
+        selected.sort(key=lambda pair: pair[1].index)
+        context_by_side: dict[str, list[dict[str, Any]]] = {"previous": [], "next": []}
+        for label, item in selected:
+            context = self._track_context(item.to_dict())
+            if context["track"]:
+                context_by_side[label].append(context)
+        if not context_by_side["previous"] and not context_by_side["next"]:
+            return []
+        return [
+            BriefingItem(
+                provider=self.name,
+                title="Music context",
+                summary=json.dumps(context_by_side, sort_keys=True),
+            )
+        ]
+
     async def async_collect(self) -> list[BriefingItem]:
-        """Return current/next queue facts without mutating playback."""
+        """Return up to three previous and next structured queue tracks."""
+        if self.music_assistant_client is not None:
+            return await self._async_collect_native()
         response = await self.hass.services.async_call(
             "music_assistant",
             "get_queue",
@@ -369,33 +435,29 @@ class QueueProvider:
         if not isinstance(player_queue, dict):
             return []
 
-        items: list[BriefingItem] = []
-        for label, key in (("Previously playing", "current_item"), ("Up next", "next_item")):
-            item = player_queue.get(key)
-            if not isinstance(item, dict):
-                continue
-            media_item = item.get("media_item")
-            if not isinstance(media_item, dict):
-                continue
-            title = media_item.get("name") or item.get("name")
-            if not isinstance(title, str) or not title.strip():
-                continue
-            artists = media_item.get("artists", [])
-            artist_names = [
-                artist.get("name")
-                for artist in artists
-                if isinstance(artist, dict) and isinstance(artist.get("name"), str)
-            ]
-            artist_text = f" by {', '.join(artist_names)}" if artist_names else ""
-            items.append(
-                BriefingItem(
-                    provider=self.name,
-                    title=label,
-                    summary=f"{label}: {title}{artist_text}",
-                    source=media_item.get("uri") if isinstance(media_item.get("uri"), str) else None,
-                )
+        context_by_side: dict[str, list[dict[str, Any]]] = {"previous": [], "next": []}
+        for label, key in (("previous", "previous_items"), ("next", "next_items")):
+            queue_items = player_queue.get(key, [])
+            if not isinstance(queue_items, list):
+                queue_items = []
+            if not queue_items and key == "previous_items" and player_queue.get("current_item"):
+                queue_items = [player_queue["current_item"]]
+            if not queue_items and key == "next_items" and player_queue.get("next_item"):
+                queue_items = [player_queue["next_item"]]
+            for offset, item in enumerate(queue_items[-3:] if label == "previous" else queue_items[:3], 1):
+                context = self._track_context(item)
+                if not context["track"]:
+                    continue
+                context_by_side[label].append(context)
+        if not context_by_side["previous"] and not context_by_side["next"]:
+            return []
+        return [
+            BriefingItem(
+                provider=self.name,
+                title="Music context",
+                summary=json.dumps(context_by_side, sort_keys=True),
             )
-        return items
+        ]
 
 
 @dataclass(frozen=True, slots=True)

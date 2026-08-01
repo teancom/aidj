@@ -29,6 +29,7 @@ from custom_components.aidj.const import (
     ATTR_MESSAGE,
     CONF_AGENT,
     CONF_AQI,
+    CONF_AQI_THRESHOLD,
     CONF_CALENDARS,
     CONF_FEEDS,
     CONF_HA_TOKEN,
@@ -152,7 +153,7 @@ async def test_weather_provider_normalizes_common_weather_attributes(
 async def test_queue_provider_normalizes_current_and_next_tracks(
     hass: HomeAssistant,
 ) -> None:
-    """Queue context includes only current and next media facts."""
+    """Fallback queue context uses structured current and next media facts."""
     get_queue = AsyncMock(
         return_value={
             "service_response": {
@@ -186,16 +187,56 @@ async def test_queue_provider_normalizes_current_and_next_tracks(
         hass, "media_player.living_room_streamer_2"
     ).async_collect()
 
-    assert [(item.title, item.summary, item.source) for item in items] == [
-        (
-            "Previously playing",
-            "Previously playing: Current Song by Current Artist",
-            "library://track/current",
-        ),
-        ("Up next", "Up next: Next Song by Next Artist", "library://track/next"),
-    ]
+    assert [item.title for item in items] == ["Music context"]
+    assert "\"artist\": \"Current Artist\"" in items[0].summary
+    assert "\"track\": \"Current Song\"" in items[0].summary
+    assert "\"artist\": \"Next Artist\"" in items[0].summary
+    assert "\"track\": \"Next Song\"" in items[0].summary
     call: ServiceCall = get_queue.await_args.args[0]
     assert call.data == {"entity_id": "media_player.living_room_streamer_2"}
+
+
+@pytest.mark.asyncio
+async def test_queue_provider_collects_native_three_track_window(hass: HomeAssistant) -> None:
+    """Native MA queue data yields up to three structured tracks on each side."""
+    class Client:
+        class Queues:
+            async def get_active_queue(self, player_id: str):
+                return type("Queue", (), {"queue_id": "queue-1", "current_index": 3})()
+
+            async def get_queue_items(self, queue_id: str):
+                def item(index: int, title: str, genre: str | None = None):
+                    return type(
+                        "Item",
+                        (),
+                        {
+                            "index": index,
+                            "uri": f"library://track/{index}",
+                            "to_dict": lambda self: {
+                                "media_item": {
+                                    "uri": self.uri,
+                                    "name": title,
+                                    "artists": [{"name": f"Artist {index}"}],
+                                    "album": {"name": f"Album {index}", "year": 2000 + index},
+                                    "metadata": {"genres": [genre]} if genre else {},
+                                },
+                                "name": title,
+                            },
+                        },
+                    )()
+                return [item(i, f"Track {i}", "micro-genre" if i == 2 else None) for i in range(7)]
+
+        player_queues = Queues()
+
+    items = await QueueProvider(
+        hass, "media_player.living_room_streamer_2", Client()
+    ).async_collect()
+
+    assert [item.title for item in items] == ["Music context"]
+    assert '"previous"' in items[0].summary
+    assert '"next"' in items[0].summary
+    assert '"genre": "micro-genre"' in items[0].summary
+    assert '"year": 2002' in items[0].summary
 
 
 @pytest.mark.asyncio
@@ -559,6 +600,8 @@ async def test_options_flow_exposes_briefing_source_fields(
     assert CONF_CALENDARS in result["data_schema"].schema
     assert result["data_schema"].schema[CONF_CALENDARS].config["multiple"] is True
     assert CONF_AQI in result["data_schema"].schema
+    assert CONF_AQI_THRESHOLD in result["data_schema"].schema
+    assert result["data_schema"].schema[CONF_AQI_THRESHOLD].config["options"][3]["value"] == "201"
     assert "music_assistant_url" not in result["data_schema"].schema
     assert "music_assistant_token" not in result["data_schema"].schema
     assert "home_assistant_token" not in result["data_schema"].schema

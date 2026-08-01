@@ -58,7 +58,8 @@
           "agent_id": "Conversation agent",
           "feed_entity_ids": "Local news feeds",
           "calendar_entity_ids": "Calendars",
-          "aqi_entity_id": "Air quality sensor"
+          "aqi_entity_id": "Air quality sensor",
+          "aqi_relevance_threshold": "AQI relevance threshold"
         }
       }
     }

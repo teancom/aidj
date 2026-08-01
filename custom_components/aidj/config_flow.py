@@ -18,6 +18,7 @@ from music_assistant_client import MusicAssistantClient
 from .const import (
     CONF_AGENT,
     CONF_AQI,
+    CONF_AQI_THRESHOLD,
     CONF_CALENDARS,
     CONF_FEEDS,
     CONF_HA_TOKEN,
@@ -311,6 +312,21 @@ class AiDjOptionsFlow(config_entries.OptionsFlow):
                     default=current.get(CONF_AQI, ""),
                 ): selector.EntitySelector(
                     EntitySelectorConfig(domain="sensor")
+                ),
+                vol.Required(
+                    CONF_AQI_THRESHOLD,
+                    default=current.get(CONF_AQI_THRESHOLD, "100"),
+                ): selector.SelectSelector(
+                    {
+                        "options": [
+                            {"value": "51", "label": "51+ (moderate or worse)"},
+                            {"value": "101", "label": "101+ (unhealthy for sensitive groups or worse)"},
+                            {"value": "151", "label": "151+ (unhealthy or worse)"},
+                            {"value": "201", "label": "201+ (very unhealthy or worse)"},
+                            {"value": "301", "label": "301+ (hazardous)"},
+                        ],
+                        "mode": selector.SelectSelectorMode.DROPDOWN,
+                    }
                 ),
             }
         )
