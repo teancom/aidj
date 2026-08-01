@@ -39,7 +39,11 @@ from .const import (
     CONF_WEATHER,
     RECENT_STORY_LIMIT,
 )
-from .prompt import build_briefing_prompt
+from .prompt import (
+    briefing_needs_grounding_retry,
+    build_briefing_prompt,
+    music_required_terms,
+)
 from .story import record_story, select_feed_story
 
 
@@ -348,9 +352,23 @@ class AiDjRuntime:
             )
 
         full_prompt = build_briefing_prompt(items, prompt)
-        generated = await HaConversationBriefingGenerator(self.hass, agent_id).async_generate(
-            full_prompt
-        )
+        generator = HaConversationBriefingGenerator(self.hass, agent_id)
+        generated = await generator.async_generate(full_prompt)
+        required_terms = music_required_terms(items)
+        if required_terms and briefing_needs_grounding_retry(generated, required_terms):
+            retry_prompt = (
+                f"{full_prompt}\n\n"
+                "Revision required: the announcement must include the exact completed/current "
+                f"track title ({required_terms[0]}) and the exact upcoming track title "
+                f"({required_terms[1] if len(required_terms) > 1 else required_terms[0]}). "
+                "Return only the revised spoken announcement, with no placeholders."
+            )
+            generated = await generator.async_generate(retry_prompt)
+            if briefing_needs_grounding_retry(generated, required_terms):
+                raise HomeAssistantError(
+                    "Conversation agent returned an announcement that did not use the supplied "
+                    "music facts"
+                )
         return GeneratedBriefing(generated, selected_story.identity if selected_story else None)
 
     async def async_generate_briefing(

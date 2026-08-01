@@ -19,7 +19,11 @@ from custom_components.aidj.ha_music_assistant import HaMusicAssistantQueue
 from custom_components.aidj.music_assistant import MusicAssistantQueueAdapter
 from custom_components.aidj.music_context import fallback_queue_context
 from custom_components.aidj.briefing_assembly import build_briefing_providers
-from custom_components.aidj.prompt import build_briefing_prompt
+from custom_components.aidj.prompt import (
+    briefing_needs_grounding_retry,
+    build_briefing_prompt,
+    music_required_terms,
+)
 from custom_components.aidj.story import record_story, select_feed_story
 from custom_components.aidj.briefing import (
     AqiEntityProvider,
@@ -613,8 +617,11 @@ def test_build_briefing_prompt_requires_specific_music_references() -> None:
 
     assert "identify the completed song or artist" in prompt
     assert "coming-up-next reference" in prompt
-    assert "Current Song" in prompt
-    assert "Next Song" in prompt
+    assert "Completed/current track: Current Song" in prompt
+    assert "Upcoming track: Next Song" in prompt
+    assert music_required_terms([item]) == ("Current Song", "Next Song")
+    assert briefing_needs_grounding_retry("You heard Current Song; Next Song is coming up.", ("Current Song", "Next Song")) is False
+    assert briefing_needs_grounding_retry("You heard [insert completed song title].", ("Current Song", "Next Song")) is True
 
 
 def test_build_briefing_prompt_uses_custom_opening_only() -> None:
