@@ -383,12 +383,14 @@ class QueueProvider:
     hass: HomeAssistant
     player_entity_id: str
     music_assistant_client: Any = None
+    music_assistant_player_id: str | None = None
     name: str = "music_assistant_queue"
 
     async def _async_collect_native(self) -> list[BriefingItem]:
         """Collect the absolute ±3 window from the official MA client."""
+        queue_player_id = self.music_assistant_player_id or self.player_entity_id
         queue = await self.music_assistant_client.player_queues.get_active_queue(
-            self.player_entity_id
+            queue_player_id
         )
         if queue is None or queue.current_index is None:
             return []

@@ -325,6 +325,7 @@ class AiDjRuntime:
             weather_entity_id=weather_entity_id,
             player_entity_id=self.player_entity_id,
             music_assistant_client=self._ma_client,
+            music_assistant_player_id=self.settings.get(CONF_MA_PLAYER, "").strip() or None,
         )
         items = collection.items
         errors = collection.errors

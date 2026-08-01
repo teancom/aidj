@@ -48,6 +48,7 @@ def build_briefing_providers(
     weather_entity_id: str,
     player_entity_id: str,
     music_assistant_client: MusicAssistantClient | None,
+    music_assistant_player_id: str | None = None,
 ) -> tuple[BriefingProvider, ...]:
     """Build providers in the stable order used by the station prompt."""
     feed_entity_ids = settings.get(CONF_FEEDS, [])
@@ -66,7 +67,14 @@ def build_briefing_providers(
     )
     if aqi_entity_id:
         providers.append(AqiEntityProvider(hass, aqi_entity_id, aqi_threshold))
-    providers.append(QueueProvider(hass, player_entity_id, music_assistant_client))
+    providers.append(
+        QueueProvider(
+            hass,
+            player_entity_id,
+            music_assistant_client,
+            music_assistant_player_id,
+        )
+    )
     return tuple(providers)
 
 
@@ -77,6 +85,7 @@ async def async_collect_station_briefing(
     weather_entity_id: str,
     player_entity_id: str,
     music_assistant_client: MusicAssistantClient | None,
+    music_assistant_player_id: str | None = None,
 ) -> BriefingCollection:
     """Build and collect all configured sources for one station pass."""
     providers = build_briefing_providers(

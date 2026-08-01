@@ -376,7 +376,11 @@ async def test_queue_provider_collects_native_three_track_window(hass: HomeAssis
     """Native MA queue data yields up to three structured tracks on each side."""
     class Client:
         class Queues:
+            def __init__(self) -> None:
+                self.active_queue_player_id = None
+
             async def get_active_queue(self, player_id: str):
+                self.active_queue_player_id = player_id
                 return type("Queue", (), {"queue_id": "queue-1", "current_index": 3})()
 
             async def get_queue_items(self, queue_id: str):
@@ -403,10 +407,17 @@ async def test_queue_provider_collects_native_three_track_window(hass: HomeAssis
 
         player_queues = Queues()
 
+    client = Client()
     items = await QueueProvider(
-        hass, "media_player.living_room_streamer_2", Client()
+        hass,
+        "media_player.living_room_streamer_2",
+        client,
+        "wiim_uuid:FF98F09C-3C05-E614-5D61-85A6FF98F09C",
     ).async_collect()
 
+    assert client.player_queues.active_queue_player_id == (
+        "wiim_uuid:FF98F09C-3C05-E614-5D61-85A6FF98F09C"
+    )
     assert [item.title for item in items] == ["Music context"]
     assert '"current"' in items[0].summary
     assert '"previous"' in items[0].summary
