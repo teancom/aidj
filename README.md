@@ -74,7 +74,7 @@ This delegates to `music_assistant.play_media` with `enqueue: add`, so the exist
 
 - Use Home Assistant config entries and selectors instead of YAML configuration.
 - Use Home Assistant media-player and TTS abstractions.
-- Use Home Assistant's Music Assistant integration for queue operations, avoiding a second MA connection or stored MA credentials.
+- Use the official `music-assistant-client` library for MA-native queue orchestration. The MA URL, API token, and player ID are optional station settings during the migration; when configured, queue-backed DJ delivery uses add-only MA queue operations rather than HA's generic announcement restore path.
 - Treat news as a provider interface. The first planned provider is Home Assistant Feedreader; direct RSS parsing is not part of the initial design.
 - Treat AI as optional infrastructure for generated DJ content, but skip an interruption when an AI briefing cannot be generated or validated.
 

@@ -15,6 +15,10 @@ from .const import (
     CONF_AGENT,
     CONF_FEED,
     CONF_NAME,
+    CONF_HA_TOKEN,
+    CONF_MA_PLAYER,
+    CONF_MA_TOKEN,
+    CONF_MA_URL,
     CONF_PLAYER,
     CONF_TTS,
     CONF_WEATHER,
@@ -49,6 +53,10 @@ class AiDjConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_TTS): selector.EntitySelector(
                     EntitySelectorConfig(domain="tts")
                 ),
+                vol.Optional(CONF_MA_URL, default="http://homeassistant.local:8095"): selector.TextSelector(),
+                vol.Optional(CONF_MA_TOKEN, default="", description={"suggested_value": ""}): selector.TextSelector(),
+                vol.Optional(CONF_HA_TOKEN, default="", description={"suggested_value": ""}): selector.TextSelector(),
+                vol.Optional(CONF_MA_PLAYER, default=""): selector.TextSelector(),
             }
         )
         return self.async_show_form(step_id="user", data_schema=schema)
@@ -82,6 +90,10 @@ class AiDjOptionsFlow(config_entries.OptionsFlow):
                 vol.Required(CONF_TTS, default=current[CONF_TTS]): selector.EntitySelector(
                     EntitySelectorConfig(domain="tts")
                 ),
+                vol.Optional(CONF_MA_URL, default=current.get(CONF_MA_URL, "http://homeassistant.local:8095")): selector.TextSelector(),
+                vol.Optional(CONF_MA_TOKEN, default=current.get(CONF_MA_TOKEN, "")): selector.TextSelector(),
+                vol.Optional(CONF_HA_TOKEN, default=current.get(CONF_HA_TOKEN, "")): selector.TextSelector(),
+                vol.Optional(CONF_MA_PLAYER, default=current.get(CONF_MA_PLAYER, "")): selector.TextSelector(),
                 vol.Optional(CONF_WEATHER, default=current.get(CONF_WEATHER, "")): selector.EntitySelector(
                     EntitySelectorConfig(domain="weather")
                 ),

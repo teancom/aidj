@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
@@ -11,6 +12,7 @@ from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components import aidj
+from custom_components.aidj.music_assistant import MusicAssistantQueueAdapter
 from custom_components.aidj.briefing import (
     BriefingItem,
     EntityStateProvider,
@@ -37,6 +39,42 @@ from custom_components.aidj.const import (
     SERVICE_START,
     SERVICE_STOP,
 )
+from music_assistant_models.enums import QueueOption
+
+
+
+@pytest.mark.asyncio
+async def test_music_assistant_queue_adapter_inserts_next_without_replacing() -> None:
+    """Native MA transport uses one add-only NEXT queue operation."""
+    class Media:
+        uri = "http://ha.local/tts/clip.mp3"
+
+    class Item:
+        queue_item_id = "aidj-item-1"
+        media_item = Media()
+
+    class Queue:
+        queue_id = "queue-1"
+        current_item = None
+        next_item = None
+        elapsed_time = 12
+
+    queues = type("Queues", (), {})()
+    queues.get_active_queue = AsyncMock(return_value=Queue())
+    queues.play_media = AsyncMock()
+    queues.get_queue_items = AsyncMock(return_value=[Item()])
+    client = type("Client", (), {"player_queues": queues})()
+
+    item_id = await MusicAssistantQueueAdapter(client, "player-1").async_insert_next(
+        " http://ha.local/tts/clip.mp3 "
+    )
+
+    assert item_id == "aidj-item-1"
+    queues.play_media.assert_awaited_once_with(
+        queue_id="queue-1",
+        media="http://ha.local/tts/clip.mp3",
+        option=QueueOption.NEXT,
+    )
 
 
 @pytest.mark.asyncio
@@ -286,6 +324,10 @@ async def test_config_flow_creates_entry_and_rejects_duplicate(
         CONF_NAME: "Living Room Radio",
         CONF_PLAYER: "media_player.living_room_streamer",
         CONF_TTS: "tts.openai_tts",
+        "music_assistant_url": "http://homeassistant.local:8095",
+        "music_assistant_token": "",
+        "home_assistant_token": "",
+        "music_assistant_player": "",
     }
 
     duplicate = await hass.config_entries.flow.async_init(
@@ -324,6 +366,9 @@ async def test_options_flow_exposes_briefing_source_fields(
     assert result["type"] == "form"
     assert CONF_WEATHER in result["data_schema"].schema
     assert CONF_AGENT in result["data_schema"].schema
+    assert "music_assistant_url" in result["data_schema"].schema
+    assert "music_assistant_token" in result["data_schema"].schema
+    assert "music_assistant_player" in result["data_schema"].schema
 
 
 @pytest.mark.asyncio
@@ -916,3 +961,115 @@ async def test_start_and_stop_call_only_the_configured_player(
     assert media_stop.await_args.args[0].data == {
         "entity_id": "media_player.living_room_streamer_2"
     }
+
+
+@pytest.mark.asyncio
+async def test_native_briefing_next_queues_prepared_tts_url_without_tts_speak(
+    hass: HomeAssistant,
+) -> None:
+    """Native briefing_next renders a URL and inserts it into MA's next slot."""
+    from custom_components.aidj.runtime import AiDjRuntime
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+            "music_assistant_url": "http://ma.local:8095",
+            "music_assistant_token": "ma-secret",
+            "home_assistant_token": "ha-secret",
+            "music_assistant_player": "wiim-player",
+        },
+    )
+    runtime = AiDjRuntime(hass, entry)
+    tts_speak = AsyncMock()
+    hass.services.async_register("tts", "speak", tts_speak)
+    generate = AsyncMock(return_value="Sunny and warm.")
+    queue_announcement = AsyncMock(return_value="queue-item")
+    announce_next = AsyncMock()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(AiDjRuntime, "async_generate_briefing", generate)
+        patch.setattr(AiDjRuntime, "async_queue_announcement_next", queue_announcement)
+        patch.setattr(AiDjRuntime, "async_announce_next", announce_next)
+        await runtime.async_briefing_next("weather.forecast_home", "conversation.agent")
+
+    queue_announcement.assert_awaited_once_with("Sunny and warm.")
+    announce_next.assert_not_awaited()
+    tts_speak.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_incomplete_native_settings_keep_boundary_tts_fallback(
+    hass: HomeAssistant,
+) -> None:
+    """Without the HA URL token, briefing_next retains legacy boundary delivery."""
+    from custom_components.aidj.runtime import AiDjRuntime
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+            "music_assistant_url": "http://ma.local:8095",
+            "music_assistant_token": "ma-secret",
+            "music_assistant_player": "wiim-player",
+        },
+    )
+    runtime = AiDjRuntime(hass, entry)
+    generate = AsyncMock(return_value="Sunny and warm.")
+    queue_announcement = AsyncMock()
+    announce_next = AsyncMock()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(AiDjRuntime, "async_generate_briefing", generate)
+        patch.setattr(AiDjRuntime, "async_queue_announcement_next", queue_announcement)
+        patch.setattr(AiDjRuntime, "async_announce_next", announce_next)
+        await runtime.async_briefing_next("weather.forecast_home", "conversation.agent")
+
+    announce_next.assert_awaited_once_with("Sunny and warm.")
+    queue_announcement.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_native_renderer_keeps_ma_and_ha_credentials_separate(
+    hass: HomeAssistant,
+) -> None:
+    """The MA client receives only the MA token; TTS receives only the HA token."""
+    from custom_components.aidj.runtime import AiDjRuntime
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+            "music_assistant_url": "http://ma.local:8095",
+            "music_assistant_token": "ma-secret",
+            "home_assistant_token": "ha-secret",
+            "music_assistant_player": "wiim-player",
+        },
+    )
+    runtime = AiDjRuntime(hass, entry)
+
+    class FakeClient:
+        def __init__(self, url, session, *, token):
+            self.url = url
+            self.token = token
+
+        async def start_listening(self, *, init_ready):
+            init_ready.set()
+            await asyncio.sleep(3600)
+
+        async def disconnect(self):
+            return None
+
+    from custom_components.aidj import runtime as runtime_module
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(runtime_module, "MusicAssistantClient", FakeClient)
+        await runtime.async_start_music_assistant()
+
+    assert runtime._ma_client.token == "ma-secret"
+    assert runtime._ma_tts.access_token == "ha-secret"
+    runtime.async_unload()

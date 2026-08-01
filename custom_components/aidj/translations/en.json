@@ -3,11 +3,15 @@
     "step": {
       "user": {
         "title": "Set up AI DJ",
-        "description": "Choose the media player and TTS entity for this DJ station. Music Assistant queue control uses Home Assistant's configured Music Assistant integration.",
+        "description": "Choose the Home Assistant player/TTS entities and the Music Assistant server/player used for queue-backed DJ segments.",
         "data": {
           "name": "Station name",
-          "player": "Media player",
-          "tts": "TTS entity"
+          "player": "Home Assistant media player",
+          "tts": "TTS entity",
+          "music_assistant_url": "Music Assistant server URL",
+          "music_assistant_token": "Music Assistant API token",
+          "home_assistant_token": "Home Assistant TTS URL token",
+          "music_assistant_player": "Music Assistant player ID"
         }
       }
     },
@@ -19,11 +23,15 @@
     "step": {
       "init": {
         "title": "Configure AI DJ",
-        "description": "Change the station name, media player, TTS entity, weather source, or conversation agent. Music Assistant queue control uses Home Assistant's configured Music Assistant integration.",
+        "description": "Change the station name, media player, TTS entity, Music Assistant connection, weather source, or conversation agent.",
         "data": {
           "name": "Station name",
-          "player": "Media player",
+          "player": "Home Assistant media player",
           "tts": "TTS entity",
+          "music_assistant_url": "Music Assistant server URL",
+          "music_assistant_token": "Music Assistant API token",
+          "home_assistant_token": "Home Assistant TTS URL token",
+          "music_assistant_player": "Music Assistant player ID",
           "weather_entity_id": "Weather entity",
           "agent_id": "Conversation agent"
         }

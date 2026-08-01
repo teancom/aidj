@@ -166,6 +166,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up an AI DJ config entry."""
     runtime = AiDjRuntime(hass, entry)
     hass.data[DOMAIN][entry.entry_id] = runtime
+    await runtime.async_start_music_assistant()
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     return True
 

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 import logging
 from typing import Any
 
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+from .music_assistant import HaTtsUrlRenderer, MusicAssistantClient, MusicAssistantQueueAdapter
 
 from .briefing import (
     BriefingItem,
@@ -17,7 +21,18 @@ from .briefing import (
     WeatherEntityProvider,
     async_collect_briefing,
 )
-from .const import CONF_AGENT, CONF_FEED, CONF_NAME, CONF_PLAYER, CONF_TTS, CONF_WEATHER
+from .const import (
+    CONF_AGENT,
+    CONF_FEED,
+    CONF_HA_TOKEN,
+    CONF_MA_PLAYER,
+    CONF_MA_TOKEN,
+    CONF_MA_URL,
+    CONF_NAME,
+    CONF_PLAYER,
+    CONF_TTS,
+    CONF_WEATHER,
+)
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -75,11 +90,69 @@ class AiDjRuntime:
     _owned_media_ids: set[str] = field(default_factory=set)
     _pending_announcement: tuple[str, str] | None = None
     _announcement_unsub: Any = None
+    _ma_client: MusicAssistantClient | None = None
+    _ma_listener_task: Any = None
+    _ma_queue: MusicAssistantQueueAdapter | None = None
+    _ma_tts: HaTtsUrlRenderer | None = None
 
     @property
     def settings(self) -> dict[str, str]:
         """Return current config data with options overriding initial values."""
         return {**self.entry.data, **self.entry.options}
+
+    @property
+    def music_assistant_enabled(self) -> bool:
+        """Return whether the optional native MA transport is configured."""
+        settings = self.settings
+        return bool(
+            settings.get(CONF_MA_URL, "").strip()
+            and settings.get(CONF_MA_TOKEN, "").strip()
+            and settings.get(CONF_HA_TOKEN, "").strip()
+            and settings.get(CONF_MA_PLAYER, "").strip()
+        )
+
+    async def async_start_music_assistant(self) -> None:
+        """Start the official MA client when native transport is configured."""
+        if not self.music_assistant_enabled or self._ma_client is not None:
+            return
+        settings = self.settings
+        self._ma_client = MusicAssistantClient(
+            settings[CONF_MA_URL].strip(),
+            async_get_clientsession(self.hass),
+            token=settings[CONF_MA_TOKEN].strip(),
+        )
+        init_ready = asyncio.Event()
+        self._ma_listener_task = self.hass.async_create_task(
+            self._ma_client.start_listening(init_ready=init_ready)
+        )
+        await init_ready.wait()
+        self._ma_queue = MusicAssistantQueueAdapter(
+            self._ma_client,
+            settings[CONF_MA_PLAYER].strip(),
+        )
+        self._ma_tts = HaTtsUrlRenderer(
+            async_get_clientsession(self.hass),
+            self.hass.config.internal_url,
+            settings[CONF_HA_TOKEN].strip(),
+            self.tts_entity_id,
+        )
+
+    async def async_queue_announcement_next(self, message: str) -> str:
+        """Render a briefing and insert it as the next MA queue item."""
+        if self._ma_queue is None or self._ma_tts is None:
+            raise ServiceValidationError(
+                "Music Assistant native transport is not configured for this station"
+            )
+        media_uri = await self._ma_tts.async_render(message)
+        return await self._ma_queue.async_insert_next(media_uri)
+
+    async def async_insert_prepared_media_next(self, media_uri: str) -> str:
+        """Insert a prepared audio URI as the next MA queue item."""
+        if self._ma_queue is None:
+            raise ServiceValidationError(
+                "Music Assistant native transport is not configured for this station"
+            )
+        return await self._ma_queue.async_insert_next(media_uri)
 
     @property
     def name(self) -> str:
@@ -153,6 +226,9 @@ class AiDjRuntime:
     ) -> None:
         """Generate a briefing and arm it for the next track boundary."""
         message = await self.async_generate_briefing(weather_entity_id, agent_id, prompt)
+        if self.music_assistant_enabled:
+            await self.async_queue_announcement_next(message)
+            return
         await self.async_announce_next(message)
 
     async def async_start(self) -> None:
@@ -223,11 +299,18 @@ class AiDjRuntime:
 
     @callback
     def async_unload(self) -> None:
-        """Cancel pending announcement listeners during unload."""
+        """Cancel pending listeners and stop native MA transport during unload."""
         self._pending_announcement = None
         if self._announcement_unsub is not None:
             self._announcement_unsub()
             self._announcement_unsub = None
+        if self._ma_listener_task is not None:
+            self._ma_listener_task.cancel()
+            self._ma_listener_task = None
+        if self._ma_client is not None:
+            self.hass.async_create_task(self._ma_client.disconnect())
+            self._ma_client = None
+            self._ma_queue = None
 
     async def async_get_queue(self) -> Any:
         """Read the active Music Assistant queue through Home Assistant."""

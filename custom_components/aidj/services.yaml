@@ -91,7 +91,7 @@ briefing:
         text:
 briefing_next:
   name: Briefing at next track
-  description: Generate a weather briefing and speak it after the next different track starts.
+  description: Generate a weather briefing and insert it as the next Music Assistant queue item when native transport is configured; otherwise speak it after the next different track starts.
   fields:
     weather_entity_id:
       name: Weather entity
