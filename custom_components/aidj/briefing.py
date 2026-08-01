@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 import hashlib
 import logging
 from typing import Any, Protocol
@@ -196,6 +196,82 @@ class EntityStateProvider:
                     summary=f"{friendly_name}: {state.state}",
                     occurred_at=state.last_updated,
                     source=entity_id,
+                )
+            )
+        return items
+
+
+@dataclass(frozen=True, slots=True)
+class CalendarEventProvider:
+    """Expose upcoming events from one Home Assistant calendar entity."""
+
+    hass: HomeAssistant
+    entity_id: str
+    days: int = 7
+    max_results: int = 20
+    name: str = "calendar"
+
+    async def async_collect(self) -> list[BriefingItem]:
+        """Return upcoming calendar events without changing the calendar."""
+        state = self.hass.states.get(self.entity_id)
+        if state is None:
+            return []
+
+        start = datetime.now().astimezone()
+        end = start + timedelta(days=self.days)
+        response = await self.hass.services.async_call(
+            "calendar",
+            "get_events",
+            {
+                "entity_id": self.entity_id,
+                "start_date_time": start.isoformat(),
+                "end_date_time": end.isoformat(),
+            },
+            blocking=True,
+            return_response=True,
+        )
+        if not isinstance(response, dict):
+            return []
+        calendar_data = response.get(self.entity_id)
+        if not isinstance(calendar_data, dict):
+            return []
+        events = calendar_data.get("events")
+        if not isinstance(events, list):
+            return []
+
+        friendly_name = state.attributes.get("friendly_name", self.entity_id)
+        items: list[BriefingItem] = []
+        for event in events[: self.max_results]:
+            if not isinstance(event, dict):
+                continue
+            summary = event.get("summary")
+            if not isinstance(summary, str) or not summary.strip():
+                continue
+            start_value = event.get("start")
+            end_value = event.get("end")
+            details = f"{friendly_name}: {summary.strip()}"
+            if isinstance(start_value, dict) and start_value.get("date"):
+                details += f" (all day on {start_value['date']})"
+                occurred_at = None
+            elif isinstance(start_value, dict) and start_value.get("dateTime"):
+                details += f" (starts {start_value['dateTime']})"
+                occurred_at = None
+            else:
+                occurred_at = None
+            if isinstance(end_value, dict) and end_value.get("dateTime"):
+                details += f", ends {end_value['dateTime']}"
+            location = event.get("location")
+            if isinstance(location, str) and location.strip():
+                details += f", location: {location.strip()}"
+            uid = event.get("uid")
+            identity = f"{self.entity_id}:{uid}" if isinstance(uid, str) and uid else None
+            items.append(
+                BriefingItem(
+                    provider=self.name,
+                    title=summary.strip(),
+                    summary=details,
+                    source=self.entity_id,
+                    identity=identity,
                 )
             )
         return items

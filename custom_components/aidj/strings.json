@@ -56,7 +56,8 @@
           "tts": "TTS entity",
           "weather_entity_id": "Weather entity",
           "agent_id": "Conversation agent",
-          "feed_entity_id": "Local news feed"
+          "feed_entity_id": "Local news feed",
+          "calendar_entity_ids": "Calendars"
         }
       }
     }

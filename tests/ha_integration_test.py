@@ -16,6 +16,7 @@ from custom_components import aidj
 from custom_components.aidj.music_assistant import MusicAssistantQueueAdapter
 from custom_components.aidj.briefing import (
     BriefingItem,
+    CalendarEventProvider,
     EntityStateProvider,
     FeedreaderEventProvider,
     HaConversationBriefingGenerator,
@@ -26,6 +27,7 @@ from custom_components.aidj.briefing import (
 from custom_components.aidj.const import (
     ATTR_MESSAGE,
     CONF_AGENT,
+    CONF_CALENDARS,
     CONF_FEED,
     CONF_HA_TOKEN,
     CONF_MA_PLAYER,
@@ -276,6 +278,63 @@ async def test_feedreader_provider_skips_missing_or_empty_event(
 
 
 @pytest.mark.asyncio
+async def test_calendar_provider_collects_upcoming_timed_and_all_day_events(
+    hass: HomeAssistant,
+) -> None:
+    """Calendar facts come from the native get_events service response."""
+    hass.states.async_set(
+        "calendar.david",
+        "on",
+        {"friendly_name": "David & Beloved"},
+    )
+    get_events = AsyncMock(
+        return_value={
+            "calendar.david": {
+                "events": [
+                    {
+                        "summary": "Dinner",
+                        "start": {"dateTime": "2026-08-01T19:00:00-07:00"},
+                        "end": {"dateTime": "2026-08-01T21:00:00-07:00"},
+                        "location": "Home",
+                        "uid": "dinner-1",
+                    },
+                    {
+                        "summary": "Birthday",
+                        "start": {"date": "2026-08-02"},
+                        "end": {"date": "2026-08-03"},
+                        "uid": "birthday-1",
+                    },
+                ]
+            }
+        }
+    )
+    hass.services.async_register(
+        "calendar",
+        "get_events",
+        get_events,
+        supports_response=SupportsResponse.ONLY,
+    )
+
+    items = await CalendarEventProvider(hass, "calendar.david").async_collect()
+
+    assert [item.title for item in items] == ["Dinner", "Birthday"]
+    assert "David & Beloved: Dinner" in items[0].summary
+    assert "starts 2026-08-01T19:00:00-07:00" in items[0].summary
+    assert "location: Home" in items[0].summary
+    assert "all day on 2026-08-02" in items[1].summary
+    assert items[0].identity == "calendar.david:dinner-1"
+    call: ServiceCall = get_events.await_args.args[0]
+    assert call.data["entity_id"] == "calendar.david"
+    assert call.data["end_date_time"]
+
+
+@pytest.mark.asyncio
+async def test_calendar_provider_skips_missing_entity(hass: HomeAssistant) -> None:
+    """A calendar that disappeared is an optional-provider no-op."""
+    assert await CalendarEventProvider(hass, "calendar.missing").async_collect() == []
+
+
+@pytest.mark.asyncio
 async def test_conversation_generator_extracts_plain_speech(
     hass: HomeAssistant,
 ) -> None:
@@ -457,6 +516,8 @@ async def test_options_flow_exposes_briefing_source_fields(
     assert result["type"] == "form"
     assert CONF_WEATHER in result["data_schema"].schema
     assert CONF_AGENT in result["data_schema"].schema
+    assert CONF_CALENDARS in result["data_schema"].schema
+    assert result["data_schema"].schema[CONF_CALENDARS].config["multiple"] is True
     assert "music_assistant_url" not in result["data_schema"].schema
     assert "music_assistant_token" not in result["data_schema"].schema
     assert "home_assistant_token" not in result["data_schema"].schema

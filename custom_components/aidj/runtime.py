@@ -19,6 +19,7 @@ from .music_assistant import HaTtsUrlRenderer, MusicAssistantClient, MusicAssist
 
 from .briefing import (
     BriefingItem,
+    CalendarEventProvider,
     FeedreaderEventProvider,
     HaConversationBriefingGenerator,
     QueueProvider,
@@ -27,6 +28,7 @@ from .briefing import (
 )
 from .const import (
     CONF_AGENT,
+    CONF_CALENDARS,
     CONF_FEED,
     CONF_HA_TOKEN,
     CONF_MA_PLAYER,
@@ -400,9 +402,17 @@ class AiDjRuntime:
             )
 
         feed_entity_id = self.settings.get(CONF_FEED, "").strip()
+        calendar_entity_ids = self.settings.get(CONF_CALENDARS, [])
+        if isinstance(calendar_entity_ids, str):
+            calendar_entity_ids = [calendar_entity_ids] if calendar_entity_ids.strip() else []
         providers = [WeatherEntityProvider(self.hass, weather_entity_id)]
         if feed_entity_id:
             providers.append(FeedreaderEventProvider(self.hass, feed_entity_id))
+        providers.extend(
+            CalendarEventProvider(self.hass, entity_id, name=f"calendar:{entity_id}")
+            for entity_id in calendar_entity_ids
+            if isinstance(entity_id, str) and entity_id.strip()
+        )
         providers.append(QueueProvider(self.hass, self.player_entity_id))
 
         items, errors = await async_collect_briefing(tuple(providers))
