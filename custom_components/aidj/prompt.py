@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-import json
-from typing import Any
 
 from .briefing import BriefingItem
+from .music_context import QueueContext, TrackContext
 
 DEFAULT_BRIEFING_PROMPT = (
     "Write a concise, friendly radio DJ briefing for an announcement "
@@ -35,39 +34,24 @@ BRIEFING_STYLE_INSTRUCTIONS = (
 )
 
 
-def _music_fact_lines(summary: str) -> list[str] | None:
-    """Turn the structured queue JSON into explicit grounding lines."""
-    try:
-        context = json.loads(summary)
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(context, dict):
-        return None
-
-    def describe(label: str, track: Any) -> str | None:
-        if not isinstance(track, dict) or not track.get("track"):
-            return None
-        title = str(track["track"])
-        artist = track.get("artist")
-        details = f"{title} by {artist}" if artist else title
+def _music_fact_lines(context: QueueContext) -> list[str]:
+    """Turn typed queue context into explicit grounding lines."""
+    def describe(label: str, track: TrackContext) -> str:
+        details = f"{track.track} by {track.artist}" if track.artist else track.track
         return f"{label}: {details}"
 
     lines: list[str] = []
-    if current := describe("Completed/current track", context.get("current")):
-        lines.append(current)
-    for track in context.get("previous", []):
-        if previous := describe("Previous track", track):
-            lines.append(previous)
-    for track in context.get("next", []):
-        if upcoming := describe("Upcoming track", track):
-            lines.append(upcoming)
-    return lines or None
+    if context.current is not None:
+        lines.append(describe("Completed/current track", context.current))
+    lines.extend(describe("Previous track", track) for track in context.previous)
+    lines.extend(describe("Upcoming track", track) for track in context.next)
+    return lines
 
 
 def _fact_lines(item: BriefingItem) -> list[str]:
     """Return readable, model-grounding lines for one briefing fact."""
-    if item.provider == "music_assistant_queue":
-        if music_lines := _music_fact_lines(item.summary):
+    if item.music_context is not None:
+        if music_lines := _music_fact_lines(item.music_context):
             return music_lines
     return [item.summary]
 
@@ -76,21 +60,11 @@ def music_required_terms(items: Sequence[BriefingItem]) -> tuple[str, ...]:
     """Return exact current and first-upcoming track titles for grounding checks."""
     terms: list[str] = []
     for item in items:
-        if item.provider != "music_assistant_queue":
+        context = item.music_context
+        if context is None:
             continue
-        try:
-            context = json.loads(item.summary)
-        except (TypeError, ValueError):
-            continue
-        if not isinstance(context, dict):
-            continue
-        current = context.get("current")
-        upcoming = context.get("next")
-        for track in (current, upcoming[0] if isinstance(upcoming, list) and upcoming else None):
-            if isinstance(track, dict) and isinstance(track.get("track"), str):
-                title = track["track"].strip()
-                if title:
-                    terms.append(title)
+        tracks = (context.current, context.next[0] if context.next else None)
+        terms.extend(track.track for track in tracks if track is not None)
     return tuple(dict.fromkeys(terms))
 
 

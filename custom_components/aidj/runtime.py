@@ -12,7 +12,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_PLAYING
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.util import dt as dt_util
-from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import event as event_helper
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
@@ -21,8 +21,7 @@ from .ha_music_assistant import HaMusicAssistantQueue
 from .music_assistant import HaTtsUrlRenderer, MusicAssistantClient, MusicAssistantQueueAdapter
 
 from .announcement import AnnouncementController
-from .briefing import BriefingItem, HaConversationBriefingGenerator
-from .briefing_assembly import async_collect_station_briefing
+from .briefing_generation import BriefingGenerationService, GeneratedBriefing
 from .const import (
     CONF_AGENT,
     CONF_AQI,
@@ -39,23 +38,56 @@ from .const import (
     CONF_WEATHER,
     RECENT_STORY_LIMIT,
 )
-from .prompt import (
-    briefing_needs_grounding_retry,
-    build_briefing_prompt,
-    music_required_terms,
-)
-from .story import record_story, select_feed_story
+from .story import record_story
 
 
 _LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
-class GeneratedBriefing:
-    """Generated speech plus the optional story selected for this briefing."""
+class ControllerState:
+    """Validated persisted state for one station controller."""
 
-    text: str
-    selected_story_id: str | None = None
+    enabled: bool = False
+    owned_queue_items: dict[str, dict[str, str]] = field(default_factory=dict)
+    recent_story_ids: tuple[str, ...] = ()
+
+    @classmethod
+    def from_storage(cls, stored: Any) -> ControllerState:
+        """Parse untrusted storage data, dropping malformed records."""
+        if not isinstance(stored, dict):
+            return cls()
+        raw_items = stored.get("owned_queue_items", {})
+        owned_items: dict[str, dict[str, str]] = {}
+        if isinstance(raw_items, dict):
+            for item_id, metadata in raw_items.items():
+                if not isinstance(item_id, str) or not isinstance(metadata, dict):
+                    continue
+                normalized = {
+                    key: str(value)
+                    for key, value in metadata.items()
+                    if isinstance(key, str) and isinstance(value, (str, int, float))
+                }
+                owned_items[item_id] = normalized
+        raw_story_ids = stored.get("recent_story_ids", [])
+        story_ids = (
+            tuple(story_id for story_id in raw_story_ids if isinstance(story_id, str))
+            if isinstance(raw_story_ids, list)
+            else ()
+        )
+        return cls(
+            enabled=stored.get("enabled") is True,
+            owned_queue_items=owned_items,
+            recent_story_ids=story_ids[-RECENT_STORY_LIMIT:],
+        )
+
+    def as_storage(self) -> dict[str, Any]:
+        """Return the stable Home Assistant storage representation."""
+        return {
+            "enabled": self.enabled,
+            "owned_queue_items": self.owned_queue_items,
+            "recent_story_ids": list(self.recent_story_ids[-RECENT_STORY_LIMIT:]),
+        }
 
 
 @dataclass(slots=True)
@@ -111,24 +143,10 @@ class AiDjRuntime:
     async def async_initialize_controller(self) -> None:
         """Restore controller state and install the schedule/state listeners."""
         self._store = Store(self.hass, 1, f"aidj.{self.entry.entry_id}")
-        stored = await self._store.async_load() or {}
-        self._enabled = bool(stored.get("enabled", False))
-        stored_items = stored.get("owned_queue_items", {})
-        if isinstance(stored_items, dict):
-            self._owned_queue_items = {
-                str(item_id): {
-                    str(key): str(value)
-                    for key, value in metadata.items()
-                    if isinstance(key, str) and isinstance(value, (str, int, float))
-                }
-                for item_id, metadata in stored_items.items()
-                if isinstance(metadata, dict)
-            }
-        stored_story_ids = stored.get("recent_story_ids", [])
-        if isinstance(stored_story_ids, list):
-            self._recent_story_ids = [
-                str(story_id) for story_id in stored_story_ids if isinstance(story_id, str)
-            ][-RECENT_STORY_LIMIT:]
+        state = ControllerState.from_storage(await self._store.async_load())
+        self._enabled = state.enabled
+        self._owned_queue_items = state.owned_queue_items
+        self._recent_story_ids = list(state.recent_story_ids)
         self._schedule_unsub = event_helper.async_track_time_change(
             self.hass, self._async_handle_schedule, minute={25, 55}, second=0
         )
@@ -198,13 +216,12 @@ class AiDjRuntime:
         """Persist enabled state and AI DJ-owned queue items."""
         if self._store is None:
             return
-        await self._store.async_save(
-            {
-                "enabled": self._enabled,
-                "owned_queue_items": self._owned_queue_items,
-                "recent_story_ids": self._recent_story_ids[-RECENT_STORY_LIMIT:],
-            }
+        state = ControllerState(
+            enabled=self._enabled,
+            owned_queue_items=self._owned_queue_items,
+            recent_story_ids=tuple(self._recent_story_ids),
         )
+        await self._store.async_save(state.as_storage())
 
     async def _async_recover_controller(self) -> None:
         """Recover enabled state without generating a briefing on restart."""
@@ -315,74 +332,15 @@ class AiDjRuntime:
         agent_id: str,
         prompt: str | None = None,
     ) -> GeneratedBriefing:
-        """Collect facts and generate speech with an explicit story selection."""
-        weather_entity_id = (weather_entity_id or self.settings.get(CONF_WEATHER, "")).strip()
-        agent_id = (agent_id or self.settings.get(CONF_AGENT, "")).strip()
-        if not weather_entity_id or not agent_id:
-            raise ServiceValidationError(
-                "weather_entity_id and agent_id must not be empty"
-            )
-
-        collection = await async_collect_station_briefing(
+        """Delegate fact collection and grounded speech generation."""
+        generator = BriefingGenerationService(
             self.hass,
             self.settings,
-            weather_entity_id=weather_entity_id,
-            player_entity_id=self.player_entity_id,
-            music_assistant_client=self._ma_client,
-            music_assistant_player_id=self.settings.get(CONF_MA_PLAYER, "").strip() or None,
+            self.player_entity_id,
+            self._ma_client,
+            self._recent_story_ids,
         )
-        items = collection.items
-        errors = collection.errors
-        selected_story = select_feed_story(items, self._recent_story_ids)
-        if selected_story is not None:
-            items = [
-                item for item in items
-                if not item.provider.startswith("feedreader:")
-            ] + [selected_story]
-        if errors:
-            _LOGGER.info(
-                "Optional briefing providers unavailable for station %s: %s",
-                self.name,
-                ", ".join(f"{name}: {error}" for name, error in errors.items()),
-            )
-        if not collection.weather_available:
-            _LOGGER.warning("Briefing weather entity is unavailable: %s", weather_entity_id)
-            raise ServiceValidationError(
-                f"Weather entity does not exist: {weather_entity_id}"
-            )
-        if self.music_assistant_enabled and not any(
-            item.provider == "music_assistant_queue" for item in items
-        ):
-            _LOGGER.error(
-                "Briefing generation stopped: verified music context was unavailable for "
-                "HA entity %s / MA player %s; provider errors=%s",
-                self.player_entity_id,
-                self.settings.get(CONF_MA_PLAYER, ""),
-                collection.errors,
-            )
-            raise HomeAssistantError(
-                "Music Assistant queue context was unavailable or inconsistent; "
-                "the briefing was not generated"
-            )
-        full_prompt = build_briefing_prompt(items, prompt)
-        generator = HaConversationBriefingGenerator(self.hass, agent_id)
-        generated = await generator.async_generate(full_prompt)
-        required_terms = music_required_terms(items)
-        if required_terms and briefing_needs_grounding_retry(generated, required_terms):
-            retry_prompt = (
-                f"{full_prompt}\n\n"
-                "Revision required: the announcement must include the exact completed/current "
-                f"track title ({required_terms[0]}) and the exact upcoming track title "
-                f"({required_terms[1] if len(required_terms) > 1 else required_terms[0]}). "
-                "Return only the revised spoken announcement, with no placeholders."
-            )
-            generated = await generator.async_generate(retry_prompt)
-            if briefing_needs_grounding_retry(generated, required_terms):
-                raise HomeAssistantError(
-                    "Conversation agent returned an announcement that did not use the supplied "
-                    "music facts"
-                )
-        return GeneratedBriefing(generated, selected_story.identity if selected_story else None)
+        return await generator.async_generate(weather_entity_id, agent_id, prompt)
 
     async def async_generate_briefing(
         self,

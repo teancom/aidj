@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from homeassistant.config_entries import SOURCE_USER
@@ -18,7 +18,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components import aidj
 from custom_components.aidj.ha_music_assistant import HaMusicAssistantQueue
 from custom_components.aidj.music_assistant import MusicAssistantQueueAdapter
-from custom_components.aidj.music_context import fallback_queue_context
+from custom_components.aidj.music_context import QueueContext, TrackContext
 from custom_components.aidj.briefing_assembly import BriefingCollection, build_briefing_providers
 from custom_components.aidj.prompt import (
     briefing_needs_grounding_retry,
@@ -53,6 +53,7 @@ from custom_components.aidj.const import (
     CONF_TTS,
     CONF_WEATHER,
     DOMAIN,
+    RECENT_STORY_LIMIT,
     SERVICE_QUEUE_ADD,
     SERVICE_ANNOUNCE,
     SERVICE_ANNOUNCE_NEXT,
@@ -381,39 +382,13 @@ async def test_queue_provider_normalizes_current_and_next_tracks(
     ).async_collect()
 
     assert [item.title for item in items] == ["Music context"]
-    assert "\"artist\": \"Current Artist\"" in items[0].summary
-    assert "\"track\": \"Current Song\"" in items[0].summary
-    assert "\"artist\": \"Next Artist\"" in items[0].summary
-    assert "\"track\": \"Next Song\"" in items[0].summary
+    assert items[0].music_context == QueueContext(
+        current=TrackContext("Current Song", artist="Current Artist"),
+        next=(TrackContext("Next Song", artist="Next Artist"),),
+    )
     call: ServiceCall = get_queue.await_args.args[0]
     assert call.data == {"entity_id": "media_player.living_room_streamer_2"}
 
-
-def test_fallback_queue_context_preserves_bounded_side_order() -> None:
-    """The pure fallback parser keeps the last previous and first next tracks."""
-    context = fallback_queue_context(
-        {
-            "previous_items": [
-                {"media_item": {"name": "Previous 1"}},
-                {"media_item": {"name": "Previous 2"}},
-                {"media_item": {"name": "Previous 3"}},
-                {"media_item": {"name": "Previous 4"}},
-            ],
-            "next_items": [
-                {"media_item": {"name": "Next 1"}},
-                {"media_item": {"name": "Next 2"}},
-                {"media_item": {"name": "Next 3"}},
-                {"media_item": {"name": "Next 4"}},
-            ],
-        }
-    )
-
-    assert [item["track"] for item in context["previous"]] == [
-        "Previous 2", "Previous 3", "Previous 4"
-    ]
-    assert [item["track"] for item in context["next"]] == [
-        "Next 1", "Next 2", "Next 3"
-    ]
 
 
 @pytest.mark.asyncio
@@ -495,12 +470,15 @@ async def test_queue_provider_collects_native_three_track_window(hass: HomeAssis
         "wiim_uuid:FF98F09C-3C05-E614-5D61-85A6FF98F09C"
     )
     assert [item.title for item in items] == ["Music context"]
-    assert '"current"' in items[0].summary
-    assert '"previous"' in items[0].summary
-    assert '"next"' in items[0].summary
-    assert '"track": "Track 3"' in items[0].summary
-    assert '"genre": "micro-genre"' in items[0].summary
-    assert '"year": 2002' in items[0].summary
+    context = items[0].music_context
+    assert context is not None
+    assert context.current == TrackContext(
+        "Track 3", artist="Artist 3", album="Album 3", year=2003
+    )
+    assert [track.track for track in context.previous] == ["Track 0", "Track 1", "Track 2"]
+    assert context.previous[-1].genre == "micro-genre"
+    assert context.previous[-1].year == 2002
+    assert [track.track for track in context.next] == ["Track 4", "Track 5", "Track 6"]
 
 
 @pytest.mark.asyncio
@@ -812,7 +790,11 @@ def test_build_briefing_prompt_requires_specific_music_references() -> None:
     item = BriefingItem(
         provider="music_assistant_queue",
         title="Music context",
-        summary='{"current": {"track": "Current Song"}, "next": [{"track": "Next Song"}]}',
+        summary="Verified Music Assistant queue context",
+        music_context=QueueContext(
+            current=TrackContext("Current Song"),
+            next=(TrackContext("Next Song"),),
+        ),
     )
 
     prompt = build_briefing_prompt([item])
@@ -963,6 +945,44 @@ async def test_config_flow_discovers_named_ma_players_and_rejects_duplicate(
         context={"source": SOURCE_USER},
     )
     assert duplicate["type"] == "form"
+
+
+@pytest.mark.asyncio
+async def test_setup_failure_cleans_up_partial_runtime(
+    hass: HomeAssistant,
+) -> None:
+    """A failed platform setup cannot leave listeners or a published runtime behind."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+        },
+    )
+    entry.add_to_hass(hass)
+    await aidj.async_setup(hass, {})
+    unload = Mock()
+
+    with patch(
+        "custom_components.aidj.runtime.AiDjRuntime.async_start_music_assistant",
+        new=AsyncMock(),
+    ), patch(
+        "custom_components.aidj.runtime.AiDjRuntime.async_initialize_controller",
+        new=AsyncMock(),
+    ), patch(
+        "custom_components.aidj.runtime.AiDjRuntime.async_unload",
+        new=unload,
+    ), patch.object(
+        hass.config_entries,
+        "async_forward_entry_setups",
+        new=AsyncMock(side_effect=RuntimeError("platform setup failed")),
+    ):
+        with pytest.raises(RuntimeError, match="platform setup failed"):
+            await aidj.async_setup_entry(hass, entry)
+
+    assert entry.entry_id not in hass.data[DOMAIN]
+    unload.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -1479,7 +1499,7 @@ async def test_native_briefing_rejects_missing_music_context(
     hass.services.async_register("conversation", "process", conversation, supports_response=SupportsResponse.ONLY)
     runtime = AiDjRuntime(hass, entry)
     with patch(
-        "custom_components.aidj.runtime.async_collect_station_briefing",
+        "custom_components.aidj.briefing_generation.async_collect_station_briefing",
         return_value=BriefingCollection(
             [BriefingItem("weather", "Weather", "Weather: sunny")], {}
         ),
@@ -1796,6 +1816,33 @@ async def test_music_assistant_listener_timeout_does_not_block_setup(
     assert runtime._ma_listener_task is not None
     assert runtime._ma_listener_task not in hass._tasks
     runtime.async_unload()
+
+
+def test_controller_state_rejects_malformed_storage_and_clamps_history() -> None:
+    """Persisted controller data is validated before entering runtime state."""
+    from custom_components.aidj.runtime import ControllerState
+
+    assert ControllerState.from_storage("not a mapping") == ControllerState()
+    state = ControllerState.from_storage(
+        {
+            "enabled": 1,
+            "owned_queue_items": {
+                "valid": {"boundary": "noon", "attempt": 2, "ignored": object()},
+                42: {"boundary": "invalid id"},
+                "invalid metadata": "not a mapping",
+            },
+            "recent_story_ids": [42, *[f"story-{index}" for index in range(20)]],
+        }
+    )
+
+    assert state.enabled is False
+    assert state.owned_queue_items == {
+        "valid": {"boundary": "noon", "attempt": "2"}
+    }
+    assert state.recent_story_ids == tuple(
+        f"story-{index}" for index in range(20 - RECENT_STORY_LIMIT, 20)
+    )
+    assert ControllerState.from_storage(state.as_storage()) == state
 
 
 def test_story_rotation_prefers_unseen_then_bounds_fifo() -> None:

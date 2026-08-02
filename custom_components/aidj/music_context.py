@@ -2,65 +2,84 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Any
 
 
-TrackContext = dict[str, Any]
-QueueContext = dict[str, Any]
+@dataclass(frozen=True, slots=True)
+class TrackContext:
+    """Normalized track metadata used for prompts and grounding checks."""
+
+    track: str
+    artist: str | None = None
+    album: str | None = None
+    genre: str | None = None
+    year: int | None = None
 
 
-def track_context(item: Any) -> TrackContext:
-    """Normalize one MA queue item into nullable DJ context fields."""
+@dataclass(frozen=True, slots=True)
+class QueueContext:
+    """Typed queue window around the track that has just completed."""
+
+    current: TrackContext | None = None
+    previous: tuple[TrackContext, ...] = ()
+    next: tuple[TrackContext, ...] = ()
+
+
+def artist_names(raw: Any) -> tuple[str, ...]:
+    """Extract stable artist names from MA metadata."""
+    if not isinstance(raw, (list, tuple, set)):
+        return ()
+    return tuple(
+        artist["name"].strip()
+        for artist in raw
+        if isinstance(artist, dict)
+        and isinstance(artist.get("name"), str)
+        and artist["name"].strip()
+    )
+
+
+def track_context(item: Any) -> TrackContext | None:
+    """Normalize one MA queue item, rejecting values without a track name."""
     media_item = item.get("media_item") if isinstance(item, dict) else None
     if not isinstance(media_item, dict):
-        return {"artist": None, "album": None, "track": None, "genre": None, "year": None}
+        return None
 
-    artists = media_item.get("artists") or []
-    artist_names = [
-        artist.get("name")
-        for artist in artists
-        if isinstance(artist, dict) and isinstance(artist.get("name"), str)
-    ]
+    track = media_item.get("name") or item.get("name")
+    if not isinstance(track, str) or not track.strip():
+        return None
+    artists = artist_names(media_item.get("artists"))
     album = media_item.get("album")
     album_name = album.get("name") if isinstance(album, dict) else None
     metadata = media_item.get("metadata") or {}
     genres = metadata.get("genres") if isinstance(metadata, dict) else None
     genre = ", ".join(sorted(genres)) if isinstance(genres, (list, set, tuple)) else None
     year = album.get("year") if isinstance(album, dict) else None
-    return {
-        "artist": ", ".join(artist_names) or None,
-        "album": album_name if isinstance(album_name, str) else None,
-        "track": media_item.get("name") or item.get("name"),
-        "genre": genre,
-        "year": year if isinstance(year, int) else None,
-    }
+    return TrackContext(
+        track=track.strip(),
+        artist=", ".join(artists) or None,
+        album=album_name if isinstance(album_name, str) else None,
+        genre=genre,
+        year=year if isinstance(year, int) else None,
+    )
 
 
-def _context_for_items(items: Iterable[Any]) -> list[TrackContext]:
+def _context_for_items(items: Iterable[Any]) -> tuple[TrackContext, ...]:
     """Normalize items and omit entries without a usable track name."""
-    contexts: list[TrackContext] = []
-    for item in items:
-        context = track_context(item)
-        if context["track"]:
-            contexts.append(context)
-    return contexts
-
-
-def _empty_context() -> QueueContext:
-    """Return the stable shape used in briefing prompt facts."""
-    return {"current": None, "previous": [], "next": []}
+    return tuple(context for item in items if (context := track_context(item)) is not None)
 
 
 def _normalize_item(item: Any) -> TrackContext | None:
-    """Normalize one item and discard it when it has no track name."""
-    context = track_context(item.to_dict() if hasattr(item, "to_dict") else item)
-    return context if context["track"] else None
+    """Normalize native objects and dictionary queue items alike."""
+    return track_context(item.to_dict() if hasattr(item, "to_dict") else item)
 
 
 def native_queue_context(queue_items: Iterable[Any], current_index: int) -> QueueContext:
     """Select current, previous, and up to three upcoming native MA tracks."""
-    context = _empty_context()
+    current: TrackContext | None = None
+    previous: list[TrackContext] = []
+    upcoming: list[TrackContext] = []
     for item in queue_items:
         index = getattr(item, "index", None)
         if not isinstance(index, int):
@@ -69,32 +88,9 @@ def native_queue_context(queue_items: Iterable[Any], current_index: int) -> Queu
         if normalized is None:
             continue
         if index == current_index:
-            context["current"] = normalized
+            current = normalized
         elif current_index - 3 <= index < current_index:
-            context["previous"].append(normalized)
+            previous.append(normalized)
         elif current_index < index <= current_index + 3:
-            context["next"].append(normalized)
-    return context
-
-
-def fallback_queue_context(player_queue: Mapping[str, Any]) -> QueueContext:
-    """Normalize current, previous, and next items returned by HA's MA service."""
-    context = _empty_context()
-    current_item = player_queue.get("current_item")
-    if current_item:
-        context["current"] = _normalize_item(current_item)
-
-    for side, key in (("previous", "previous_items"), ("next", "next_items")):
-        queue_items = player_queue.get(key, [])
-        if not isinstance(queue_items, list):
-            queue_items = []
-        if not queue_items and side == "next" and player_queue.get("next_item"):
-            queue_items = [player_queue["next_item"]]
-        bounded = queue_items[-3:] if side == "previous" else queue_items[:3]
-        context[side].extend(_context_for_items(bounded))
-    return context
-
-
-def has_tracks(context: QueueContext) -> bool:
-    """Return whether a normalized queue context contains any usable tracks."""
-    return bool(context["current"] or context["previous"] or context["next"])
+            upcoming.append(normalized)
+    return QueueContext(current, tuple(previous), tuple(upcoming))

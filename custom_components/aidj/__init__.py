@@ -181,6 +181,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         from . import switch
 
         await switch.async_setup_entry(hass, entry, lambda entities: None)
+    except Exception:
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+        runtime.async_unload()
+        raise
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     return True
 
