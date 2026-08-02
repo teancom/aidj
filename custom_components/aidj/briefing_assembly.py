@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping
 
 from homeassistant.core import HomeAssistant
 
@@ -17,14 +16,7 @@ from .briefing import (
     WeatherEntityProvider,
     async_collect_briefing,
 )
-from .const import (
-    CONF_AQI,
-    CONF_AQI_THRESHOLD,
-    CONF_CALENDARS,
-    CONF_FEEDS,
-    CONF_WEATHER,
-    PROVIDER_WEATHER,
-)
+from .const import PROVIDER_FEEDREADER_PREFIX, PROVIDER_WEATHER, StationSettings
 from .music_assistant import MusicAssistantClient
 
 
@@ -43,7 +35,7 @@ class BriefingCollection:
 
 def build_briefing_providers(
     hass: HomeAssistant,
-    settings: Mapping[str, Any],
+    settings: StationSettings,
     *,
     weather_entity_id: str,
     player_entity_id: str,
@@ -51,14 +43,16 @@ def build_briefing_providers(
     music_assistant_player_id: str | None = None,
 ) -> tuple[BriefingProvider, ...]:
     """Build providers in the stable order used by the station prompt."""
-    feed_entity_ids = settings.get(CONF_FEEDS, [])
-    calendar_entity_ids = settings.get(CONF_CALENDARS, [])
-    aqi_entity_id = str(settings.get(CONF_AQI, "")).strip()
-    aqi_threshold = float(settings.get(CONF_AQI_THRESHOLD, "101"))
+    feed_entity_ids = settings.feed_entity_ids
+    calendar_entity_ids = settings.calendar_entity_ids
+    aqi_entity_id = settings.aqi_entity_id
+    aqi_threshold = settings.aqi_relevance_threshold
 
     providers: list[BriefingProvider] = [WeatherEntityProvider(hass, weather_entity_id)]
     providers.extend(
-        FeedreaderEventProvider(hass, entity_id, name=f"feedreader:{entity_id}")
+        FeedreaderEventProvider(
+            hass, entity_id, name=f"{PROVIDER_FEEDREADER_PREFIX}{entity_id}"
+        )
         for entity_id in feed_entity_ids
     )
     providers.extend(
@@ -80,7 +74,7 @@ def build_briefing_providers(
 
 async def async_collect_station_briefing(
     hass: HomeAssistant,
-    settings: Mapping[str, Any],
+    settings: StationSettings,
     *,
     weather_entity_id: str,
     player_entity_id: str,

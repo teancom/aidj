@@ -22,22 +22,7 @@ from .music_assistant import HaTtsUrlRenderer, MusicAssistantClient, MusicAssist
 
 from .announcement import AnnouncementController
 from .briefing_generation import BriefingGenerationService, GeneratedBriefing
-from .const import (
-    CONF_AGENT,
-    CONF_AQI,
-    CONF_AQI_THRESHOLD,
-    CONF_CALENDARS,
-    CONF_FEEDS,
-    CONF_HA_TOKEN,
-    CONF_MA_PLAYER,
-    CONF_MA_TOKEN,
-    CONF_MA_URL,
-    CONF_NAME,
-    CONF_PLAYER,
-    CONF_TTS,
-    CONF_WEATHER,
-    RECENT_STORY_LIMIT,
-)
+from .const import RECENT_STORY_LIMIT, StationSettings
 from .story import record_story
 
 
@@ -120,9 +105,9 @@ class AiDjRuntime:
         self._ha_queue = HaMusicAssistantQueue(self.hass, self.player_entity_id)
 
     @property
-    def settings(self) -> dict[str, Any]:
-        """Return current config data with options overriding initial values."""
-        return {**self.entry.data, **self.entry.options}
+    def settings(self) -> StationSettings:
+        """Return normalized config data with options overriding initial values."""
+        return StationSettings.from_mapping({**self.entry.data, **self.entry.options})
 
     @property
     def enabled(self) -> bool:
@@ -132,13 +117,7 @@ class AiDjRuntime:
     @property
     def music_assistant_enabled(self) -> bool:
         """Return whether the optional native MA transport is configured."""
-        settings = self.settings
-        return bool(
-            settings.get(CONF_MA_URL, "").strip()
-            and settings.get(CONF_MA_TOKEN, "").strip()
-            and settings.get(CONF_HA_TOKEN, "").strip()
-            and settings.get(CONF_MA_PLAYER, "").strip()
-        )
+        return self.settings.music_assistant_enabled
 
     async def async_initialize_controller(self) -> None:
         """Restore controller state and install the schedule/state listeners."""
@@ -177,9 +156,9 @@ class AiDjRuntime:
             return
         settings = self.settings
         self._ma_client = MusicAssistantClient(
-            settings[CONF_MA_URL].strip(),
+            settings.music_assistant_url,
             async_get_clientsession(self.hass),
-            token=settings[CONF_MA_TOKEN].strip(),
+            token=settings.music_assistant_token,
         )
         init_ready = asyncio.Event()
         self._ma_listener_task = self.entry.async_create_background_task(
@@ -197,12 +176,12 @@ class AiDjRuntime:
             )
         self._ma_queue = MusicAssistantQueueAdapter(
             self._ma_client,
-            settings[CONF_MA_PLAYER].strip(),
+            settings.music_assistant_player_id,
         )
         self._ma_tts = HaTtsUrlRenderer(
             async_get_clientsession(self.hass),
             self.hass.config.internal_url,
-            settings[CONF_HA_TOKEN].strip(),
+            settings.home_assistant_token,
             self.tts_entity_id,
         )
 
@@ -240,27 +219,33 @@ class AiDjRuntime:
             target += timedelta(hours=1)
         await self._async_prepare_boundary(target)
 
+    def _has_prepared_boundary(self, boundary: str) -> bool:
+        """Return whether this station already owns a break for the boundary."""
+        return boundary in {
+            metadata.get("boundary") for metadata in self._owned_queue_items.values()
+        }
+
+    def _is_player_playing(self) -> bool:
+        """Return whether the configured HA player is actively playing."""
+        state = self.hass.states.get(self.player_entity_id)
+        return state is not None and state.state == STATE_PLAYING
+
     async def _async_prepare_boundary(self, target: datetime) -> None:
         """Generate and queue one fresh briefing for a clock boundary."""
         boundary = target.isoformat()
-        if (
-            not self._enabled
-            or not self.music_assistant_enabled
-            or boundary in {metadata.get("boundary") for metadata in self._owned_queue_items.values()}
-            or self._preparing_boundary == boundary
-        ):
+        if not self._enabled or not self.music_assistant_enabled:
             return
-        state = self.hass.states.get(self.player_entity_id)
-        if state is None or state.state != STATE_PLAYING:
+        if self._has_prepared_boundary(boundary) or self._preparing_boundary == boundary:
+            return
+        if not self._is_player_playing():
             return
         self._preparing_boundary = boundary
         try:
             briefing = await self._async_generate_briefing(
-                self.settings.get(CONF_WEATHER, ""),
-                self.settings.get(CONF_AGENT, ""),
+                self.settings.weather_entity_id,
+                self.settings.agent_id,
             )
-            state = self.hass.states.get(self.player_entity_id)
-            if not self._enabled or state is None or state.state != STATE_PLAYING:
+            if not self._enabled or not self._is_player_playing():
                 return
             queue_item_id = await self.async_queue_announcement_next(briefing.text)
             self._owned_queue_items[queue_item_id] = {
@@ -314,17 +299,17 @@ class AiDjRuntime:
     @property
     def name(self) -> str:
         """Return the station name."""
-        return self.settings[CONF_NAME]
+        return self.settings.name
 
     @property
     def player_entity_id(self) -> str:
         """Return the configured media player."""
-        return self.settings[CONF_PLAYER]
+        return self.settings.player_entity_id
 
     @property
     def tts_entity_id(self) -> str:
         """Return the configured TTS entity."""
-        return self.settings[CONF_TTS]
+        return self.settings.tts_entity_id
 
     async def _async_generate_briefing(
         self,
@@ -418,6 +403,10 @@ class AiDjRuntime:
 
     def _require_player(self) -> None:
         """Raise when the configured media player is not available in HA."""
+        if not self.player_entity_id.startswith("media_player."):
+            raise ServiceValidationError(
+                f"Configured player is not a media_player entity: {self.player_entity_id}"
+            )
         if self.hass.states.get(self.player_entity_id) is None:
             raise ServiceValidationError(
                 f"Configured media player does not exist: {self.player_entity_id}"
@@ -431,6 +420,10 @@ class AiDjRuntime:
 
         self._require_player()
 
+        if not self.tts_entity_id.startswith("tts."):
+            raise ServiceValidationError(
+                f"Configured TTS target is not a tts entity: {self.tts_entity_id}"
+            )
         tts_entity = self.hass.states.get(self.tts_entity_id)
         if tts_entity is None:
             raise ServiceValidationError(

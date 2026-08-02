@@ -59,9 +59,56 @@ from custom_components.aidj.const import (
     SERVICE_ANNOUNCE_NEXT,
     SERVICE_BRIEFING,
     SERVICE_BRIEFING_NEXT,
+    StationSettings,
 )
 from music_assistant_models.enums import ContentType, MediaType, QueueOption
 
+
+
+def test_station_settings_normalizes_effective_config() -> None:
+    """Internal settings normalize whitespace, lists, and numeric values once."""
+    settings = StationSettings.from_mapping(
+        {
+            CONF_NAME: "  Living Room Radio  ",
+            CONF_PLAYER: " media_player.living_room ",
+            CONF_TTS: " tts.openai ",
+            CONF_MA_URL: " http://music-assistant:8095 ",
+            CONF_MA_TOKEN: " ma-token ",
+            CONF_HA_TOKEN: " ha-token ",
+            CONF_MA_PLAYER: " wiim-player ",
+            CONF_FEEDS: [" event.news ", "", 7],
+            CONF_CALENDARS: (" calendar.home ",),
+            CONF_AQI_THRESHOLD: "151",
+        }
+    )
+
+    assert settings.name == "Living Room Radio"
+    assert settings.player_entity_id == "media_player.living_room"
+    assert settings.feed_entity_ids == ("event.news",)
+    assert settings.calendar_entity_ids == ("calendar.home",)
+    assert settings.aqi_relevance_threshold == 151.0
+    assert settings.music_assistant_enabled is True
+
+
+def test_station_settings_defaults_malformed_optional_values() -> None:
+    """Malformed legacy optional values cannot leak into runtime consumers."""
+    settings = StationSettings.from_mapping(
+        {
+            CONF_NAME: "AI DJ",
+            CONF_PLAYER: "media_player.living_room",
+            CONF_TTS: "tts.openai",
+            CONF_FEEDS: "event.not-a-list",
+            CONF_AQI_THRESHOLD: "not-a-number",
+            CONF_MA_URL: "http://music-assistant:8095",
+        }
+    )
+
+    assert settings.feed_entity_ids == ()
+    assert settings.calendar_entity_ids == ()
+    assert settings.aqi_relevance_threshold == 101.0
+    assert settings.music_assistant_enabled is False
+    assert StationSettings.from_mapping({CONF_AQI_THRESHOLD: "nan"}).aqi_relevance_threshold == 101.0
+    assert StationSettings.from_mapping({CONF_AQI_THRESHOLD: "501"}).aqi_relevance_threshold == 101.0
 
 
 @pytest.mark.asyncio
@@ -280,12 +327,14 @@ def test_briefing_provider_assembly_preserves_source_order_and_settings(
     """Station assembly builds weather, feeds, calendars, AQI, then queue."""
     providers = build_briefing_providers(
         hass,
-        {
-            CONF_FEEDS: ["event.local_news"],
-            CONF_CALENDARS: ["calendar.david", "calendar.home_calendar"],
-            CONF_AQI: "sensor.outdoor_us_aqi",
-            CONF_AQI_THRESHOLD: "101",
-        },
+        StationSettings.from_mapping(
+            {
+                CONF_FEEDS: ["event.local_news"],
+                CONF_CALENDARS: ["calendar.david", "calendar.home_calendar"],
+                CONF_AQI: "sensor.outdoor_us_aqi",
+                CONF_AQI_THRESHOLD: "101",
+            }
+        ),
         weather_entity_id="weather.forecast_home",
         player_entity_id="media_player.living_room_streamer_2",
         music_assistant_client=None,
@@ -1087,6 +1136,7 @@ async def test_options_flow_exposes_briefing_source_fields(
             CONF_PLAYER: "media_player.living_room_streamer_2",
             CONF_TTS: "tts.openai_tts",
         },
+        options={CONF_AQI_THRESHOLD: "nan"},
     )
     entry.add_to_hass(hass)
 
@@ -1101,6 +1151,12 @@ async def test_options_flow_exposes_briefing_source_fields(
     assert result["data_schema"].schema[CONF_CALENDARS].config["multiple"] is True
     assert CONF_AQI in result["data_schema"].schema
     assert CONF_AQI_THRESHOLD in result["data_schema"].schema
+    threshold_marker = next(
+        marker
+        for marker in result["data_schema"].schema
+        if marker.schema == CONF_AQI_THRESHOLD
+    )
+    assert threshold_marker.default() == "101"
     assert any(
         option["value"] == "101"
         for option in result["data_schema"].schema[CONF_AQI_THRESHOLD].config["options"]
@@ -1149,6 +1205,33 @@ async def test_announce_calls_tts_speak_with_configured_targets(
         ATTR_MESSAGE: "Welcome to the living room.",
         "cache": False,
     }
+
+
+@pytest.mark.asyncio
+async def test_announce_rejects_wrong_entity_domains(hass: HomeAssistant) -> None:
+    """Malformed legacy settings fail before calling an unrelated entity domain."""
+    from custom_components.aidj.runtime import AiDjRuntime
+
+    wrong_player = AiDjRuntime(
+        hass,
+        MockConfigEntry(
+            domain=DOMAIN,
+            data={CONF_NAME: "Radio", CONF_PLAYER: "switch.speaker", CONF_TTS: "tts.voice"},
+        ),
+    )
+    with pytest.raises(Exception, match="not a media_player entity"):
+        await wrong_player.async_announce("Hello")
+
+    hass.states.async_set("media_player.speaker", STATE_IDLE)
+    wrong_tts = AiDjRuntime(
+        hass,
+        MockConfigEntry(
+            domain=DOMAIN,
+            data={CONF_NAME: "Radio", CONF_PLAYER: "media_player.speaker", CONF_TTS: "sensor.voice"},
+        ),
+    )
+    with pytest.raises(Exception, match="not a tts entity"):
+        await wrong_tts.async_announce("Hello")
 
 
 def _set_playing_track(hass: HomeAssistant, entity_id: str, media_id: str, title: str) -> None:
@@ -1927,6 +2010,11 @@ def test_story_rotation_prefers_unseen_then_bounds_fifo() -> None:
 
     recent = ["story-0", "story-1"]
     assert select_feed_story(stories[:2], recent) is None
+
+    default_provider_story = BriefingItem(
+        provider="feedreader", title="Default provider", summary="", identity="default"
+    )
+    assert select_feed_story([default_provider_story], []) == default_provider_story
 
 
 @pytest.mark.asyncio

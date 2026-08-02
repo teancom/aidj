@@ -32,7 +32,17 @@ from .const import (
     DEFAULT_MA_URL,
     DEFAULT_NAME,
     DOMAIN,
+    StationSettings,
 )
+
+
+def _normalized_credentials(values: dict[str, Any]) -> dict[str, str]:
+    """Return stripped integration credentials from validated flow input."""
+    return {
+        CONF_MA_URL: values[CONF_MA_URL].strip(),
+        CONF_MA_TOKEN: values[CONF_MA_TOKEN].strip(),
+        CONF_HA_TOKEN: values[CONF_HA_TOKEN].strip(),
+    }
 
 
 async def _async_get_ma_players(
@@ -126,11 +136,7 @@ class AiDjConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     data_schema=self._integration_schema(user_input),
                     errors={"base": "no_players"},
                 )
-            self._integration_data = {
-                CONF_MA_URL: user_input[CONF_MA_URL].strip(),
-                CONF_MA_TOKEN: user_input[CONF_MA_TOKEN].strip(),
-                CONF_HA_TOKEN: user_input[CONF_HA_TOKEN].strip(),
-            }
+            self._integration_data = _normalized_credentials(user_input)
             return self.async_show_form(
                 step_id="station",
                 data_schema=self._station_schema(),
@@ -177,11 +183,7 @@ class AiDjConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     data_schema=self._integration_schema(user_input),
                     errors={"base": "no_players"},
                 )
-            self._integration_data = {
-                CONF_MA_URL: user_input[CONF_MA_URL].strip(),
-                CONF_MA_TOKEN: user_input[CONF_MA_TOKEN].strip(),
-                CONF_HA_TOKEN: user_input[CONF_HA_TOKEN].strip(),
-            }
+            self._integration_data = _normalized_credentials(user_input)
             self._ma_player_options = options
             return self.async_show_form(
                 step_id="reconfigure_player",
@@ -282,6 +284,7 @@ class AiDjOptionsFlow(config_entries.OptionsFlow):
             return self.async_create_entry(title="", data=user_input)
 
         current = {**self.config_entry.data, **self.config_entry.options}
+        normalized = StationSettings.from_mapping(current)
         schema = vol.Schema(
             {
                 vol.Required(CONF_NAME, default=current[CONF_NAME]): selector.TextSelector(),
@@ -315,7 +318,7 @@ class AiDjOptionsFlow(config_entries.OptionsFlow):
                 ),
                 vol.Required(
                     CONF_AQI_THRESHOLD,
-                    default=current.get(CONF_AQI_THRESHOLD, "101"),
+                    default=f"{normalized.aqi_relevance_threshold:g}",
                 ): selector.SelectSelector(
                     {
                         "options": [

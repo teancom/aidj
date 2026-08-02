@@ -15,6 +15,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
+from .const import PROVIDER_FEEDREADER, PROVIDER_MUSIC_ASSISTANT_QUEUE
 from .music_context import QueueContext
 from .queue_snapshot import (
     QueueSnapshot,
@@ -264,7 +265,7 @@ class FeedreaderEventProvider:
 
     hass: HomeAssistant
     entity_id: str
-    name: str = "feedreader"
+    name: str = PROVIDER_FEEDREADER
 
     async def async_collect(self) -> list[BriefingItem]:
         """Return all entries retained by Feedreader, newest first."""
@@ -437,7 +438,7 @@ class QueueProvider:
     player_entity_id: str
     music_assistant_client: Any = None
     music_assistant_player_id: str | None = None
-    name: str = "music_assistant_queue"
+    name: str = PROVIDER_MUSIC_ASSISTANT_QUEUE
 
     async def _async_collect_native(self) -> tuple[QueueSnapshot, QueueContext] | None:
         """Collect and normalize the native Music Assistant queue boundary."""

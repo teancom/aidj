@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 from aiohttp import ClientSession
 from music_assistant_client import MusicAssistantClient

@@ -5,9 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from .briefing import BriefingItem
-
-
-FEEDREADER_PROVIDER_PREFIX = "feedreader:"
+from .const import PROVIDER_FEEDREADER, PROVIDER_FEEDREADER_PREFIX
 
 
 def select_feed_story(
@@ -18,7 +16,11 @@ def select_feed_story(
     feed_items = [
         item
         for item in items
-        if item.provider.startswith(FEEDREADER_PROVIDER_PREFIX) and item.identity
+        if (
+            item.provider == PROVIDER_FEEDREADER
+            or item.provider.startswith(PROVIDER_FEEDREADER_PREFIX)
+        )
+        and item.identity
     ]
     if not feed_items:
         return None

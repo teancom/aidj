@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Sequence
 import logging
 
 from homeassistant.core import HomeAssistant
@@ -12,13 +12,9 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from .briefing import HaConversationBriefingGenerator
 from .briefing_assembly import async_collect_station_briefing
 from .const import (
-    CONF_AGENT,
-    CONF_HA_TOKEN,
-    CONF_MA_PLAYER,
-    CONF_MA_TOKEN,
-    CONF_MA_URL,
-    CONF_NAME,
-    CONF_WEATHER,
+    PROVIDER_FEEDREADER_PREFIX,
+    PROVIDER_MUSIC_ASSISTANT_QUEUE,
+    StationSettings,
 )
 from .prompt import briefing_needs_grounding_retry, build_briefing_prompt, music_required_terms
 from .story import select_feed_story
@@ -39,7 +35,7 @@ class BriefingGenerationService:
     """Collect context and generate a grounded briefing for one station."""
 
     hass: HomeAssistant
-    settings: Mapping[str, Any]
+    settings: StationSettings
     player_entity_id: str
     music_assistant_client: Any
     recent_story_ids: Sequence[str]
@@ -47,18 +43,12 @@ class BriefingGenerationService:
     @property
     def music_assistant_player_id(self) -> str | None:
         """Return the configured native Music Assistant player, when enabled."""
-        player_id = str(self.settings.get(CONF_MA_PLAYER, "")).strip()
-        return player_id or None
+        return self.settings.music_assistant_player_id or None
 
     @property
     def music_assistant_enabled(self) -> bool:
         """Return whether the native Music Assistant transport is configured."""
-        return bool(
-            str(self.settings.get(CONF_MA_URL, "")).strip()
-            and str(self.settings.get(CONF_MA_TOKEN, "")).strip()
-            and str(self.settings.get(CONF_HA_TOKEN, "")).strip()
-            and self.music_assistant_player_id
-        )
+        return self.settings.music_assistant_enabled
 
     async def async_generate(
         self,
@@ -67,8 +57,8 @@ class BriefingGenerationService:
         prompt: str | None = None,
     ) -> GeneratedBriefing:
         """Collect facts and generate speech with an explicit story selection."""
-        weather_entity_id = (weather_entity_id or self.settings.get(CONF_WEATHER, "")).strip()
-        agent_id = (agent_id or self.settings.get(CONF_AGENT, "")).strip()
+        weather_entity_id = (weather_entity_id or self.settings.weather_entity_id).strip()
+        agent_id = (agent_id or self.settings.agent_id).strip()
         if not weather_entity_id or not agent_id:
             raise ServiceValidationError("weather_entity_id and agent_id must not be empty")
 
@@ -85,19 +75,19 @@ class BriefingGenerationService:
         if selected_story is not None:
             items = [
                 item for item in items
-                if not item.provider.startswith("feedreader:")
+                if not item.provider.startswith(PROVIDER_FEEDREADER_PREFIX)
             ] + [selected_story]
         if collection.errors:
             _LOGGER.info(
                 "Optional briefing providers unavailable for station %s: %s",
-                self.settings.get(CONF_NAME, ""),
+                self.settings.name,
                 ", ".join(f"{name}: {error}" for name, error in collection.errors.items()),
             )
         if not collection.weather_available:
             _LOGGER.warning("Briefing weather entity is unavailable: %s", weather_entity_id)
             raise ServiceValidationError(f"Weather entity does not exist: {weather_entity_id}")
         if self.music_assistant_enabled and not any(
-            item.provider == "music_assistant_queue" for item in items
+            item.provider == PROVIDER_MUSIC_ASSISTANT_QUEUE for item in items
         ):
             _LOGGER.error(
                 "Briefing generation stopped: verified music context was unavailable for "
