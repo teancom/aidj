@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from .music_context import QueueContext, native_queue_context, artist_names
+from .music_context import QueueContext, artist_names, as_mapping, native_queue_context
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,20 +29,11 @@ class QueueSnapshot:
     next_item: QueueItemIdentity | None
 
 
-def _as_dict(item: Any) -> Mapping[str, Any] | None:
-    if hasattr(item, "to_dict"):
-        try:
-            item = item.to_dict()
-        except Exception:  # noqa: BLE001 - malformed provider object
-            return None
-    return item if isinstance(item, Mapping) else None
-
-
 def queue_item_identity(item: Any) -> QueueItemIdentity | None:
     """Parse the comparable identity shared by HA and native queue items."""
-    item_dict = _as_dict(item)
-    media_item = item_dict.get("media_item") if item_dict else None
-    if not isinstance(media_item, Mapping):
+    item_dict = as_mapping(item)
+    media_item = as_mapping(item_dict.get("media_item")) if item_dict else None
+    if media_item is None:
         return None
     queue_item_id = item_dict.get("queue_item_id")
     uri = media_item.get("uri")

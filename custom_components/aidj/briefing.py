@@ -446,8 +446,13 @@ class QueueProvider:
         )
         if queue is None:
             return None
+        current_index = getattr(queue, "current_index", None)
+        if not isinstance(current_index, int):
+            return None
         queue_items = await self.music_assistant_client.player_queues.get_queue_items(
-            queue.queue_id
+            queue.queue_id,
+            limit=7,
+            offset=max(current_index - 3, 0),
         )
         return parse_native_queue_snapshot(queue, queue_items)
 

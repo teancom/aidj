@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -27,33 +27,49 @@ class QueueContext:
     next: tuple[TrackContext, ...] = ()
 
 
+def as_mapping(value: Any) -> Mapping[str, Any] | None:
+    """Adapt Music Assistant models and dictionaries to a mapping boundary."""
+    if isinstance(value, Mapping):
+        return value
+    if hasattr(value, "to_dict"):
+        try:
+            serialized = value.to_dict()
+        except Exception:  # noqa: BLE001 - malformed provider object
+            return None
+        return serialized if isinstance(serialized, Mapping) else None
+    return None
+
+
 def artist_names(raw: Any) -> tuple[str, ...]:
     """Extract stable artist names from MA metadata."""
     if not isinstance(raw, (list, tuple, set)):
         return ()
-    return tuple(
-        artist["name"].strip()
-        for artist in raw
-        if isinstance(artist, dict)
-        and isinstance(artist.get("name"), str)
-        and artist["name"].strip()
-    )
+    names: list[str] = []
+    for artist in raw:
+        artist_data = as_mapping(artist)
+        name = artist_data.get("name") if artist_data else getattr(artist, "name", None)
+        if isinstance(name, str) and name.strip():
+            names.append(name.strip())
+    return tuple(names)
 
 
 def track_context(item: Any) -> TrackContext | None:
     """Normalize one MA queue item, rejecting values without a track name."""
-    media_item = item.get("media_item") if isinstance(item, dict) else None
-    if not isinstance(media_item, dict):
+    item_data = as_mapping(item)
+    if item_data is None:
+        return None
+    media_item = as_mapping(item_data.get("media_item"))
+    if media_item is None:
         return None
 
-    track = media_item.get("name") or item.get("name")
+    track = media_item.get("name") or item_data.get("name")
     if not isinstance(track, str) or not track.strip():
         return None
     artists = artist_names(media_item.get("artists"))
-    album = media_item.get("album")
-    album_name = album.get("name") if isinstance(album, dict) else None
-    metadata = media_item.get("metadata") or {}
-    genres = metadata.get("genres") if isinstance(metadata, dict) else None
+    album = as_mapping(media_item.get("album"))
+    album_name = album.get("name") if album else None
+    metadata = as_mapping(media_item.get("metadata"))
+    genres = metadata.get("genres") if metadata else None
     genre = ", ".join(sorted(genres)) if isinstance(genres, (list, set, tuple)) else None
     year = album.get("year") if isinstance(album, dict) else None
     return TrackContext(

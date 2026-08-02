@@ -340,8 +340,8 @@ async def test_queue_provider_normalizes_current_and_next_tracks(
                 assert player_id == "wiim-player"
                 return type("Queue", (), {"queue_id": "queue-1", "current_index": 4})()
 
-            async def get_queue_items(self, queue_id: str):
-                assert queue_id == "queue-1"
+            async def get_queue_items(self, queue_id: str, *, limit: int, offset: int):
+                assert (queue_id, limit, offset) == ("queue-1", 7, 1)
                 return [
                     type(
                         "Item",
@@ -403,7 +403,8 @@ async def test_queue_provider_collects_native_three_track_window(hass: HomeAssis
                 self.active_queue_player_id = player_id
                 return type("Queue", (), {"queue_id": "queue-1", "current_index": 3})()
 
-            async def get_queue_items(self, queue_id: str):
+            async def get_queue_items(self, queue_id: str, *, limit: int, offset: int):
+                assert (queue_id, limit, offset) == ("queue-1", 7, 0)
                 def item(index: int, title: str, genre: str | None = None):
                     return type(
                         "Item",
@@ -481,6 +482,44 @@ async def test_queue_provider_collects_native_three_track_window(hass: HomeAssis
     assert [track.track for track in context.next] == ["Track 4", "Track 5", "Track 6"]
 
 
+def test_music_context_accepts_nested_music_assistant_model_objects() -> None:
+    """Native queue models need not eagerly serialize nested media objects."""
+    from custom_components.aidj.music_context import track_context
+    from custom_components.aidj.queue_snapshot import queue_item_identity
+
+    artist = type("Artist", (), {"name": "  Cass McCombs  "})()
+    media = type(
+        "Media",
+        (),
+        {
+            "to_dict": lambda self: {
+                "uri": "library://track/80683",
+                "name": "My Pilgrim Dear",
+                "artists": [artist],
+            }
+        },
+    )()
+    item = type(
+        "QueueItem",
+        (),
+        {
+            "to_dict": lambda self: {
+                "queue_item_id": "queue-item-1",
+                "name": "Cass McCombs - My Pilgrim Dear",
+                "media_item": media,
+            }
+        },
+    )()
+
+    assert track_context(item) == TrackContext(
+        "My Pilgrim Dear", artist="Cass McCombs"
+    )
+    identity = queue_item_identity(item)
+    assert identity is not None
+    assert identity.uri == "library://track/80683"
+    assert identity.artists == ("Cass McCombs",)
+
+
 @pytest.mark.asyncio
 async def test_queue_provider_fails_closed_when_ha_and_native_disagree(
     hass: HomeAssistant,
@@ -520,7 +559,8 @@ async def test_queue_provider_fails_closed_when_ha_and_native_disagree(
         async def get_active_queue(self, player_id: str):
             return type("Queue", (), {"queue_id": "queue-1", "current_index": 3})()
 
-        async def get_queue_items(self, queue_id: str):
+        async def get_queue_items(self, queue_id: str, *, limit: int, offset: int):
+            assert (queue_id, limit, offset) == ("queue-1", 7, 0)
             def item(index: int, title: str, artist: str):
                 return type(
                     "Item",
