@@ -313,19 +313,19 @@ async def test_queue_provider_normalizes_current_and_next_tracks(
             "service_response": {
                 "media_player.living_room_streamer_2": {
                     "queue_id": "queue-1",
-                    "current_index": 4,
+                    "current_index": 26,
                     "current_item": {
-                        "queue_item_id": "item-4",
+                        "queue_item_id": "item-26",
                         "media_item": {
-                            "uri": "library://track/4",
+                            "uri": "library://track/26",
                             "name": "Current Song",
                             "artists": [{"name": "Current Artist"}],
                         },
                     },
                     "next_item": {
-                        "queue_item_id": "item-5",
+                        "queue_item_id": "item-27",
                         "media_item": {
-                            "uri": "library://track/5",
+                            "uri": "library://track/27",
                             "name": "Next Song",
                             "artists": [{"name": "Next Artist"}],
                         },
@@ -338,32 +338,40 @@ async def test_queue_provider_normalizes_current_and_next_tracks(
         class Queues:
             async def get_active_queue(self, player_id: str):
                 assert player_id == "wiim-player"
-                return type("Queue", (), {"queue_id": "queue-1", "current_index": 4})()
+                return type("Queue", (), {"queue_id": "queue-1", "current_index": 26})()
 
             async def get_queue_items(self, queue_id: str, *, limit: int, offset: int):
-                assert (queue_id, limit, offset) == ("queue-1", 7, 1)
-                return [
-                    type(
+                assert (queue_id, limit, offset) == ("queue-1", 7, 23)
+                def item(absolute_index: int):
+                    title = (
+                        "Current Song" if absolute_index == 26
+                        else "Next Song" if absolute_index == 27
+                        else f"Track {absolute_index}"
+                    )
+                    artist = (
+                        "Current Artist" if absolute_index == 26
+                        else "Next Artist" if absolute_index == 27
+                        else f"Artist {absolute_index}"
+                    )
+                    return type(
                         "Item",
                         (),
                         {
-                            "index": index,
-                            "queue_item_id": f"item-{index}",
-                            "to_dict": lambda self, index=index, title=title, artist=artist: {
-                                "queue_item_id": f"item-{index}",
+                            # The real MA client currently loses the absolute index
+                            # when deserializing a paginated queue response.
+                            "index": 0,
+                            "queue_item_id": f"item-{absolute_index}",
+                            "to_dict": lambda self: {
+                                "queue_item_id": self.queue_item_id,
                                 "media_item": {
-                                    "uri": f"library://track/{index}",
+                                    "uri": f"library://track/{absolute_index}",
                                     "name": title,
                                     "artists": [{"name": artist}],
                                 },
                             },
                         },
                     )()
-                    for index, title, artist in (
-                        (4, "Current Song", "Current Artist"),
-                        (5, "Next Song", "Next Artist"),
-                    )
-                ]
+                return [item(index) for index in range(23, 30)]
 
         player_queues = Queues()
 
@@ -384,7 +392,16 @@ async def test_queue_provider_normalizes_current_and_next_tracks(
     assert [item.title for item in items] == ["Music context"]
     assert items[0].music_context == QueueContext(
         current=TrackContext("Current Song", artist="Current Artist"),
-        next=(TrackContext("Next Song", artist="Next Artist"),),
+        previous=(
+            TrackContext("Track 23", artist="Artist 23"),
+            TrackContext("Track 24", artist="Artist 24"),
+            TrackContext("Track 25", artist="Artist 25"),
+        ),
+        next=(
+            TrackContext("Next Song", artist="Next Artist"),
+            TrackContext("Track 28", artist="Artist 28"),
+            TrackContext("Track 29", artist="Artist 29"),
+        ),
     )
     call: ServiceCall = get_queue.await_args.args[0]
     assert call.data == {"entity_id": "media_player.living_room_streamer_2"}

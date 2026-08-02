@@ -20,7 +20,6 @@ from .queue_snapshot import (
     QueueSnapshot,
     parse_ha_queue_snapshot,
     parse_native_queue_snapshot,
-    queue_item_diagnostics,
     snapshot_mismatches,
 )
 
@@ -456,20 +455,12 @@ class QueueProvider:
             limit=7,
             offset=offset,
         )
-        result = parse_native_queue_snapshot(queue, queue_items)
-        if result is None:
-            _LOGGER.error(
-                "Native queue normalization failed for MA player %s: "
-                "queue_type=%s queue_id=%r current_index=%r offset=%s item_count=%s items=%s",
-                self.music_assistant_player_id,
-                type(queue).__name__,
-                getattr(queue, "queue_id", None),
-                current_index,
-                offset,
-                len(queue_items),
-                [queue_item_diagnostics(item) for item in queue_items],
-            )
-        return result
+        # The MA paginated items response omits absolute indices, so the client
+        # deserializes every row with QueueItem.index's default value of zero.
+        # Restore indices from the ordered page before selecting the queue window.
+        for relative_index, item in enumerate(queue_items):
+            item.index = offset + relative_index
+        return parse_native_queue_snapshot(queue, queue_items)
 
     async def _async_collect_ha(self) -> QueueSnapshot | None:
         """Collect and normalize the Home Assistant queue boundary."""
