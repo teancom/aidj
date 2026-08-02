@@ -101,7 +101,11 @@ class BriefingGenerationService:
                 "the briefing was not generated"
             )
 
-        full_prompt = build_briefing_prompt(items, prompt)
+        full_prompt = build_briefing_prompt(
+            items,
+            prompt,
+            self.settings.personality_instructions,
+        )
         generator = HaConversationBriefingGenerator(self.hass, agent_id)
         generated = await generator.async_generate(full_prompt)
         required_terms = music_required_terms(items)

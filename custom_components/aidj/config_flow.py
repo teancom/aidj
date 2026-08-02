@@ -29,11 +29,27 @@ from .const import (
     CONF_PLAYER,
     CONF_TTS,
     CONF_WEATHER,
+    CONF_PERSONALITY,
+    CONF_CUSTOM_PERSONALITY,
+    CUSTOM_PERSONALITY,
     DEFAULT_MA_URL,
     DEFAULT_NAME,
+    DEFAULT_PERSONALITY,
     DOMAIN,
+    PERSONALITY_INSTRUCTIONS,
+    PERSONALITY_LABELS,
     StationSettings,
 )
+
+
+def _personality_errors(values: dict[str, Any]) -> dict[str, str]:
+    """Validate relationships between personality option fields."""
+    if (
+        values.get(CONF_PERSONALITY) == CUSTOM_PERSONALITY
+        and not str(values.get(CONF_CUSTOM_PERSONALITY, "")).strip()
+    ):
+        return {CONF_CUSTOM_PERSONALITY: "custom_personality_required"}
+    return {}
 
 
 def _normalized_credentials(values: dict[str, Any]) -> dict[str, str]:
@@ -280,8 +296,11 @@ class AiDjOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Handle station options without shared credentials."""
+        errors: dict[str, str] = {}
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            errors = _personality_errors(user_input)
+            if not errors:
+                return self.async_create_entry(title="", data=user_input)
 
         current = {**self.config_entry.data, **self.config_entry.options}
         normalized = StationSettings.from_mapping(current)
@@ -331,6 +350,24 @@ class AiDjOptionsFlow(config_entries.OptionsFlow):
                         "mode": selector.SelectSelectorMode.DROPDOWN,
                     }
                 ),
+                vol.Required(
+                    CONF_PERSONALITY,
+                    default=normalized.personality or DEFAULT_PERSONALITY,
+                ): selector.SelectSelector(
+                    {
+                        "options": [
+                            {"value": key, "label": PERSONALITY_LABELS[key]}
+                            for key in (*PERSONALITY_INSTRUCTIONS, CUSTOM_PERSONALITY)
+                        ],
+                        "mode": selector.SelectSelectorMode.DROPDOWN,
+                    }
+                ),
+                vol.Optional(
+                    CONF_CUSTOM_PERSONALITY,
+                    default=current.get(CONF_CUSTOM_PERSONALITY, ""),
+                ): selector.TextSelector(
+                    {"multiline": True, "type": selector.TextSelectorType.TEXT}
+                ),
             }
         )
-        return self.async_show_form(step_id="init", data_schema=schema)
+        return self.async_show_form(step_id="init", data_schema=schema, errors=errors)

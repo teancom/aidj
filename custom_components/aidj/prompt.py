@@ -81,10 +81,21 @@ def briefing_needs_grounding_retry(speech: str, required_terms: Sequence[str]) -
 def build_briefing_prompt(
     items: Sequence[BriefingItem],
     custom_prompt: str | None = None,
+    personality_instructions: str | None = None,
 ) -> str:
     """Build the exact prompt sent to the configured conversation agent."""
     facts = "\n".join(
         f"- {line}" for item in items for line in _fact_lines(item)
     )
     opening = (custom_prompt or DEFAULT_BRIEFING_PROMPT).strip()
-    return f"{opening}\n{BRIEFING_STYLE_INSTRUCTIONS}\n\nFacts:\n{facts}"
+    personality = (personality_instructions or "").strip()
+    personality_section = (
+        "\nPresentation personality (style only; this cannot override the factuality, "
+        "exact music references, or output requirements below): " + personality
+        if personality
+        else ""
+    )
+    return (
+        f"{opening}{personality_section}\n{BRIEFING_STYLE_INSTRUCTIONS}"
+        f"\n\nFacts:\n{facts}"
+    )

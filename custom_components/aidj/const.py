@@ -24,6 +24,8 @@ CONF_FEEDS: Final = "feed_entity_ids"
 CONF_CALENDARS: Final = "calendar_entity_ids"
 CONF_AQI: Final = "aqi_entity_id"
 CONF_AQI_THRESHOLD: Final = "aqi_relevance_threshold"
+CONF_PERSONALITY: Final = "personality"
+CONF_CUSTOM_PERSONALITY: Final = "custom_personality"
 CONF_CONFIG_ENTRY_ID: Final = "config_entry_id"
 
 ATTR_MESSAGE: Final = "message"
@@ -38,6 +40,48 @@ PROVIDER_MUSIC_ASSISTANT_QUEUE: Final = "music_assistant_queue"
 
 DEFAULT_NAME: Final = "AI DJ"
 DEFAULT_MA_URL: Final = "http://homeassistant.local:8095"
+DEFAULT_PERSONALITY: Final = "balanced"
+CUSTOM_PERSONALITY: Final = "custom"
+PERSONALITY_LABELS: Final[dict[str, str]] = {
+    "balanced": "Balanced",
+    "bright_brisk": "Bright & brisk",
+    "refined_reflective": "Refined & reflective",
+    "warm_neighborly": "Warm & neighborly",
+    "dry_understated": "Dry & understated",
+    "calm_intimate": "Calm & intimate",
+    "crisp_direct": "Crisp & direct",
+    "custom": "Custom instructions",
+}
+PERSONALITY_INSTRUCTIONS: Final[dict[str, str]] = {
+    "balanced": (
+        "Use a balanced radio-host presentation: friendly, concise, conversational, "
+        "and energetic only when the material calls for it."
+    ),
+    "bright_brisk": (
+        "Use a bright, brisk presentation: short energetic sentences, quick transitions, "
+        "and friendly momentum. Be lively without shouting, catchphrases, or exaggerated hype."
+    ),
+    "refined_reflective": (
+        "Use a refined, reflective presentation: measured sentences, precise vocabulary, "
+        "restrained warmth, and graceful transitions. Never sound academic or pretentious."
+    ),
+    "warm_neighborly": (
+        "Use a warm, neighborly presentation: inclusive language, practical relevance, and "
+        "a relaxed conversational rhythm. Avoid stereotypes and forced local color."
+    ),
+    "dry_understated": (
+        "Use a dry, understated presentation: calm delivery, economical wording, and at most "
+        "one subtle observational aside. Avoid broad jokes, sarcasm, or mockery."
+    ),
+    "calm_intimate": (
+        "Use a calm, intimate presentation: unhurried flowing sentences, gentle transitions, "
+        "low-key warmth, and occasional direct listener address. Avoid melodrama."
+    ),
+    "crisp_direct": (
+        "Use a crisp, direct presentation: compact factual sentences, clean signposting, "
+        "minimal adjectives, and a composed broadcast rhythm. Still sound human."
+    ),
+}
 RECENT_STORY_LIMIT: Final[int] = 10
 
 
@@ -65,6 +109,8 @@ class StationSettings:
     calendar_entity_ids: tuple[str, ...] = ()
     aqi_entity_id: str = ""
     aqi_relevance_threshold: float = 101.0
+    personality: str = DEFAULT_PERSONALITY
+    custom_personality: str = ""
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, Any]) -> StationSettings:
@@ -79,6 +125,12 @@ class StationSettings:
                 raise ValueError
         except (TypeError, ValueError):
             aqi_threshold = 101.0
+        personality = text(CONF_PERSONALITY)
+        if personality not in PERSONALITY_INSTRUCTIONS and personality != CUSTOM_PERSONALITY:
+            personality = DEFAULT_PERSONALITY
+        custom_personality = text(CONF_CUSTOM_PERSONALITY)
+        if personality == CUSTOM_PERSONALITY and not custom_personality:
+            personality = DEFAULT_PERSONALITY
         return cls(
             name=text(CONF_NAME),
             player_entity_id=text(CONF_PLAYER),
@@ -93,7 +145,16 @@ class StationSettings:
             calendar_entity_ids=_string_list(values.get(CONF_CALENDARS)),
             aqi_entity_id=text(CONF_AQI),
             aqi_relevance_threshold=aqi_threshold,
+            personality=personality,
+            custom_personality=custom_personality,
         )
+
+    @property
+    def personality_instructions(self) -> str:
+        """Return normalized presentation instructions for prompt construction."""
+        if self.personality == CUSTOM_PERSONALITY:
+            return self.custom_personality
+        return PERSONALITY_INSTRUCTIONS[self.personality]
 
     @property
     def music_assistant_enabled(self) -> bool:

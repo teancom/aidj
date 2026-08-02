@@ -17,6 +17,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components import aidj
 from custom_components.aidj.ha_music_assistant import HaMusicAssistantQueue
+from custom_components.aidj.config_flow import _personality_errors
 from custom_components.aidj.music_assistant import MusicAssistantQueueAdapter
 from custom_components.aidj.music_context import QueueContext, TrackContext
 from custom_components.aidj.briefing_assembly import BriefingCollection, build_briefing_providers
@@ -52,6 +53,9 @@ from custom_components.aidj.const import (
     CONF_PLAYER,
     CONF_TTS,
     CONF_WEATHER,
+    CONF_PERSONALITY,
+    CONF_CUSTOM_PERSONALITY,
+    DEFAULT_PERSONALITY,
     DOMAIN,
     RECENT_STORY_LIMIT,
     SERVICE_QUEUE_ADD,
@@ -87,7 +91,27 @@ def test_station_settings_normalizes_effective_config() -> None:
     assert settings.feed_entity_ids == ("event.news",)
     assert settings.calendar_entity_ids == ("calendar.home",)
     assert settings.aqi_relevance_threshold == 151.0
+    assert settings.personality == DEFAULT_PERSONALITY
+    assert "balanced radio-host" in settings.personality_instructions
     assert settings.music_assistant_enabled is True
+
+
+def test_station_settings_normalizes_personality() -> None:
+    """Preset and custom personalities produce safe prompt instructions."""
+    preset = StationSettings.from_mapping({CONF_PERSONALITY: "crisp_direct"})
+    custom = StationSettings.from_mapping(
+        {
+            CONF_PERSONALITY: "custom",
+            CONF_CUSTOM_PERSONALITY: "  Sound curious, but never breathless.  ",
+        }
+    )
+    malformed = StationSettings.from_mapping({CONF_PERSONALITY: "future_unknown"})
+    empty_custom = StationSettings.from_mapping({CONF_PERSONALITY: "custom"})
+
+    assert "compact factual sentences" in preset.personality_instructions
+    assert custom.personality_instructions == "Sound curious, but never breathless."
+    assert malformed.personality == DEFAULT_PERSONALITY
+    assert empty_custom.personality == DEFAULT_PERSONALITY
 
 
 def test_station_settings_defaults_malformed_optional_values() -> None:
@@ -914,13 +938,20 @@ def test_build_briefing_prompt_requires_specific_music_references() -> None:
     assert briefing_needs_grounding_retry("You heard [insert completed song title].", ("Current Song", "Next Song")) is True
 
 
-def test_build_briefing_prompt_uses_custom_opening_only() -> None:
-    """Custom prompt text retains the shared style and facts contract."""
+def test_build_briefing_prompt_layers_task_personality_and_facts() -> None:
+    """One-off task and station personality retain shared rules and facts."""
     item = BriefingItem(provider="weather", title="Weather", summary="Weather: sunny")
 
-    prompt = build_briefing_prompt([item], "Speak like a surfer.")
+    prompt = build_briefing_prompt(
+        [item],
+        "Keep this break to one sentence.",
+        "Use calm, flowing sentences.",
+    )
 
-    assert prompt.startswith("Speak like a surfer.\n")
+    assert prompt.startswith("Keep this break to one sentence.\n")
+    assert "Presentation personality (style only;" in prompt
+    assert "Use calm, flowing sentences." in prompt
+    assert "write like a human local radio DJ" in prompt
     assert "Facts:\n- Weather: sunny" in prompt
 
 
@@ -1151,6 +1182,20 @@ async def test_options_flow_exposes_briefing_source_fields(
     assert result["data_schema"].schema[CONF_CALENDARS].config["multiple"] is True
     assert CONF_AQI in result["data_schema"].schema
     assert CONF_AQI_THRESHOLD in result["data_schema"].schema
+    assert CONF_PERSONALITY in result["data_schema"].schema
+    personality_options = result["data_schema"].schema[CONF_PERSONALITY].config["options"]
+    assert {option["value"] for option in personality_options} == {
+        "balanced",
+        "bright_brisk",
+        "refined_reflective",
+        "warm_neighborly",
+        "dry_understated",
+        "calm_intimate",
+        "crisp_direct",
+        "custom",
+    }
+    assert CONF_CUSTOM_PERSONALITY in result["data_schema"].schema
+    assert result["data_schema"].schema[CONF_CUSTOM_PERSONALITY].config["multiline"] is True
     threshold_marker = next(
         marker
         for marker in result["data_schema"].schema
@@ -1165,6 +1210,16 @@ async def test_options_flow_exposes_briefing_source_fields(
     assert "music_assistant_token" not in result["data_schema"].schema
     assert "home_assistant_token" not in result["data_schema"].schema
     assert "music_assistant_player" not in result["data_schema"].schema
+
+    assert _personality_errors(
+        {CONF_PERSONALITY: "custom", CONF_CUSTOM_PERSONALITY: "   "}
+    ) == {CONF_CUSTOM_PERSONALITY: "custom_personality_required"}
+    assert _personality_errors(
+        {
+            CONF_PERSONALITY: "custom",
+            CONF_CUSTOM_PERSONALITY: "Measured, playful, and concise.",
+        }
+    ) == {}
 
 
 @pytest.mark.asyncio
@@ -1522,6 +1577,7 @@ async def test_briefing_service_uses_configured_source_defaults(
         options={
             CONF_WEATHER: "weather.forecast_home",
             CONF_AGENT: "conversation.openai_conversation",
+            CONF_PERSONALITY: "crisp_direct",
         },
     )
     entry.add_to_hass(hass)
@@ -1554,6 +1610,10 @@ async def test_briefing_service_uses_configured_source_defaults(
     assert conversation.await_args.args[0].data["agent_id"] == (
         "conversation.openai_conversation"
     )
+    generated_prompt = conversation.await_args.args[0].data["text"]
+    assert "Presentation personality (style only;" in generated_prompt
+    assert "compact factual sentences" in generated_prompt
+    assert generated_prompt.startswith("One sentence.\n")
 
 
 @pytest.mark.asyncio

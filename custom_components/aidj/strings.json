@@ -46,10 +46,13 @@
     }
   },
   "options": {
+    "error": {
+      "custom_personality_required": "Enter custom personality instructions or choose a preset."
+    },
     "step": {
       "init": {
         "title": "Configure AI DJ station",
-        "description": "Change this station's name, Home Assistant entities, weather source, or conversation agent. Music Assistant credentials are configured at the integration level.",
+        "description": "Change this station's name, Home Assistant entities, briefing sources, conversation agent, or DJ personality. Music Assistant credentials are configured at the integration level.",
         "data": {
           "name": "Station name",
           "player": "Home Assistant media player",
@@ -59,7 +62,9 @@
           "feed_entity_ids": "Local news feeds",
           "calendar_entity_ids": "Calendars",
           "aqi_entity_id": "Air quality sensor",
-          "aqi_relevance_threshold": "AQI relevance threshold"
+          "aqi_relevance_threshold": "AQI relevance threshold",
+          "personality": "DJ personality",
+          "custom_personality": "Custom personality instructions (used only when Custom is selected)"
         }
       }
     }
