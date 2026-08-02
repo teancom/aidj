@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+import voluptuous as vol
 from homeassistant.config_entries import SOURCE_USER
 from homeassistant.const import STATE_IDLE, STATE_PLAYING
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
@@ -1167,7 +1168,11 @@ async def test_options_flow_exposes_briefing_source_fields(
             CONF_PLAYER: "media_player.living_room_streamer_2",
             CONF_TTS: "tts.openai_tts",
         },
-        options={CONF_AQI_THRESHOLD: "nan"},
+        options={
+            CONF_AQI_THRESHOLD: "nan",
+            CONF_PERSONALITY: "calm_intimate",
+            CONF_CUSTOM_PERSONALITY: "Can this be deleted?",
+        },
     )
     entry.add_to_hass(hass)
 
@@ -1196,6 +1201,13 @@ async def test_options_flow_exposes_briefing_source_fields(
     }
     assert CONF_CUSTOM_PERSONALITY in result["data_schema"].schema
     assert result["data_schema"].schema[CONF_CUSTOM_PERSONALITY].config["multiline"] is True
+    custom_marker = next(
+        marker
+        for marker in result["data_schema"].schema
+        if marker.schema == CONF_CUSTOM_PERSONALITY
+    )
+    assert custom_marker.default is vol.UNDEFINED
+    assert custom_marker.description["suggested_value"] == "Can this be deleted?"
     threshold_marker = next(
         marker
         for marker in result["data_schema"].schema

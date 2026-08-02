@@ -364,7 +364,9 @@ class AiDjOptionsFlow(config_entries.OptionsFlow):
                 ),
                 vol.Optional(
                     CONF_CUSTOM_PERSONALITY,
-                    default=current.get(CONF_CUSTOM_PERSONALITY, ""),
+                    description={
+                        "suggested_value": current.get(CONF_CUSTOM_PERSONALITY, "")
+                    },
                 ): selector.TextSelector(
                     {"multiline": True, "type": selector.TextSelectorType.TEXT}
                 ),
