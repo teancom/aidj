@@ -6,7 +6,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from .music_context import QueueContext, artist_names, as_mapping, native_queue_context
+from .music_context import (
+    QueueContext,
+    artist_names,
+    as_mapping,
+    native_queue_context,
+    track_context,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +86,23 @@ def parse_native_queue_snapshot(queue: Any, items: Sequence[Any]) -> tuple[Queue
     if context.current is None or not context.next or current_identity is None or next_identity is None:
         return None
     return QueueSnapshot(queue_id.strip(), current_index, current_identity, next_identity), context
+
+
+def queue_item_diagnostics(item: Any) -> dict[str, Any]:
+    """Return a bounded, non-sensitive summary of native queue-item shape."""
+    item_dict = as_mapping(item)
+    media_raw = item_dict.get("media_item") if item_dict else None
+    media_item = as_mapping(media_raw)
+    return {
+        "object_type": type(item).__name__,
+        "index": getattr(item, "index", None),
+        "queue_item_id": getattr(item, "queue_item_id", None),
+        "dict_keys": sorted(item_dict) if item_dict else None,
+        "media_object_type": type(media_raw).__name__ if media_raw is not None else None,
+        "media_dict_keys": sorted(media_item) if media_item else None,
+        "identity": queue_item_identity(item),
+        "context": track_context(item),
+    }
 
 
 def snapshot_mismatches(ha: QueueSnapshot, native: QueueSnapshot) -> dict[str, tuple[Any, Any]]:

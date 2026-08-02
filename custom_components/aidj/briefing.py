@@ -20,6 +20,7 @@ from .queue_snapshot import (
     QueueSnapshot,
     parse_ha_queue_snapshot,
     parse_native_queue_snapshot,
+    queue_item_diagnostics,
     snapshot_mismatches,
 )
 
@@ -449,12 +450,26 @@ class QueueProvider:
         current_index = getattr(queue, "current_index", None)
         if not isinstance(current_index, int):
             return None
+        offset = max(current_index - 3, 0)
         queue_items = await self.music_assistant_client.player_queues.get_queue_items(
             queue.queue_id,
             limit=7,
-            offset=max(current_index - 3, 0),
+            offset=offset,
         )
-        return parse_native_queue_snapshot(queue, queue_items)
+        result = parse_native_queue_snapshot(queue, queue_items)
+        if result is None:
+            _LOGGER.error(
+                "Native queue normalization failed for MA player %s: "
+                "queue_type=%s queue_id=%r current_index=%r offset=%s item_count=%s items=%s",
+                self.music_assistant_player_id,
+                type(queue).__name__,
+                getattr(queue, "queue_id", None),
+                current_index,
+                offset,
+                len(queue_items),
+                [queue_item_diagnostics(item) for item in queue_items],
+            )
+        return result
 
     async def _async_collect_ha(self) -> QueueSnapshot | None:
         """Collect and normalize the Home Assistant queue boundary."""
