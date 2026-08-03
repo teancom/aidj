@@ -2030,6 +2030,61 @@ async def test_music_assistant_listener_timeout_does_not_block_setup(
     runtime.async_unload()
 
 
+@pytest.mark.asyncio
+async def test_music_assistant_listener_reconnects_after_failure(
+    hass: HomeAssistant,
+) -> None:
+    """A failed MA listener is replaced instead of leaving a dead client forever."""
+    from custom_components.aidj import runtime as runtime_module
+    from custom_components.aidj.runtime import AiDjRuntime
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+            CONF_MA_URL: "http://ma.local:8095",
+            CONF_MA_TOKEN: "ma-secret",
+            CONF_HA_TOKEN: "ha-secret",
+            CONF_MA_PLAYER: "wiim-player",
+        },
+    )
+    entry.add_to_hass(hass)
+    runtime = AiDjRuntime(hass, entry)
+    clients = []
+
+    class ReconnectingClient:
+        def __init__(self, url, session, *, token):
+            self.number = len(clients) + 1
+            self.disconnected = False
+            clients.append(self)
+
+        async def start_listening(self, *, init_ready):
+            if self.number == 1:
+                raise ConnectionError("MA is still starting")
+            init_ready.set()
+            await asyncio.Event().wait()
+
+        async def disconnect(self):
+            self.disconnected = True
+
+    async def immediate_sleep(delay):
+        return None
+
+    with patch.object(runtime_module, "MusicAssistantClient", ReconnectingClient), patch(
+        "custom_components.aidj.runtime.asyncio.sleep",
+        new=immediate_sleep,
+    ):
+        await runtime.async_start_music_assistant()
+
+    assert len(clients) == 2
+    assert clients[0].disconnected is True
+    assert runtime._ma_client is clients[1]
+    assert runtime._ma_queue.client is clients[1]
+    runtime.async_unload()
+
+
 def test_controller_state_rejects_malformed_storage_and_clamps_history() -> None:
     """Persisted controller data is validated before entering runtime state."""
     from custom_components.aidj.runtime import ControllerState

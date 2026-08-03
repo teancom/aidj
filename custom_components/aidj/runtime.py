@@ -151,19 +151,13 @@ class AiDjRuntime:
             return
 
     async def async_start_music_assistant(self) -> None:
-        """Start the official MA client when native transport is configured."""
-        if not self.music_assistant_enabled or self._ma_client is not None:
+        """Start and supervise the official MA client when configured."""
+        if not self.music_assistant_enabled or self._ma_listener_task is not None:
             return
-        settings = self.settings
-        self._ma_client = MusicAssistantClient(
-            settings.music_assistant_url,
-            async_get_clientsession(self.hass),
-            token=settings.music_assistant_token,
-        )
         init_ready = asyncio.Event()
         self._ma_listener_task = self.entry.async_create_background_task(
             self.hass,
-            self._ma_client.start_listening(init_ready=init_ready),
+            self._async_run_music_assistant(init_ready),
             name="music_assistant_listener",
         )
         try:
@@ -171,19 +165,69 @@ class AiDjRuntime:
         except TimeoutError:
             _LOGGER.warning(
                 "Music Assistant did not become ready within 15 seconds for station %s; "
-                "continuing setup while the background listener reconnects",
+                "the background listener will keep retrying",
                 self.name,
             )
-        self._ma_queue = MusicAssistantQueueAdapter(
-            self._ma_client,
-            settings.music_assistant_player_id,
-        )
-        self._ma_tts = HaTtsUrlRenderer(
-            async_get_clientsession(self.hass),
-            self.hass.config.internal_url,
-            settings.home_assistant_token,
-            self.tts_entity_id,
-        )
+
+    async def _async_run_music_assistant(self, first_ready: asyncio.Event) -> None:
+        """Reconnect the MA client when startup or an established listener fails."""
+        retry_delay = 1
+        while True:
+            settings = self.settings
+            client = MusicAssistantClient(
+                settings.music_assistant_url,
+                async_get_clientsession(self.hass),
+                token=settings.music_assistant_token,
+            )
+            ready = asyncio.Event()
+            self._ma_client = client
+            self._ma_queue = MusicAssistantQueueAdapter(
+                client,
+                settings.music_assistant_player_id,
+            )
+            self._ma_tts = HaTtsUrlRenderer(
+                async_get_clientsession(self.hass),
+                self.hass.config.internal_url,
+                settings.home_assistant_token,
+                self.tts_entity_id,
+            )
+            listener: asyncio.Task[Any] | None = None
+            ready_waiter: asyncio.Task[Any] | None = None
+            try:
+                listener = asyncio.create_task(client.start_listening(init_ready=ready))
+                ready_waiter = asyncio.create_task(ready.wait())
+                done, _ = await asyncio.wait(
+                    {listener, ready_waiter},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if ready_waiter in done and ready.is_set():
+                    first_ready.set()
+                    retry_delay = 1
+                    await listener
+                else:
+                    ready_waiter.cancel()
+                    await listener
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:  # noqa: BLE001 - reconnect after transport failure
+                _LOGGER.warning(
+                    "Music Assistant listener unavailable for station %s: %s; "
+                    "retrying in %s seconds",
+                    self.name,
+                    err,
+                    retry_delay,
+                )
+            finally:
+                if ready_waiter is not None and not ready_waiter.done():
+                    ready_waiter.cancel()
+                if listener is not None and not listener.done():
+                    listener.cancel()
+                await client.disconnect()
+                if self._ma_client is client:
+                    self._ma_client = None
+                    self._ma_queue = None
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 30)
 
     def _record_story(self, story_id: str | None) -> None:
         """Commit one story after its briefing side effect succeeds."""
@@ -392,6 +436,7 @@ class AiDjRuntime:
             )
             self._ma_client = None
             self._ma_queue = None
+            self._ma_tts = None
 
     async def async_get_queue(self) -> Any:
         """Read the active Music Assistant queue through Home Assistant."""
