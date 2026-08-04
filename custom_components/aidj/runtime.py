@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import logging
+from random import randint
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -20,9 +21,9 @@ from homeassistant.helpers.storage import Store
 from .ha_music_assistant import HaMusicAssistantQueue
 from .music_assistant import HaTtsUrlRenderer, MusicAssistantClient, MusicAssistantQueueAdapter
 
-from .announcement import AnnouncementController
+from .announcement import AnnouncementController, track_identity
 from .briefing_generation import BriefingGenerationService, GeneratedBriefing
-from .const import RECENT_STORY_LIMIT, StationSettings
+from .const import CADENCE_CONTENT_FULL, RECENT_STORY_LIMIT, StationSettings
 from .story import record_story
 
 
@@ -36,6 +37,9 @@ class ControllerState:
     enabled: bool = False
     owned_queue_items: dict[str, dict[str, str]] = field(default_factory=dict)
     recent_story_ids: tuple[str, ...] = ()
+    cadence_track_count: int = 0
+    cadence_target: int = 0
+    cadence_last_track: str = ""
 
     @classmethod
     def from_storage(cls, stored: Any) -> ControllerState:
@@ -64,6 +68,15 @@ class ControllerState:
             enabled=stored.get("enabled") is True,
             owned_queue_items=owned_items,
             recent_story_ids=story_ids[-RECENT_STORY_LIMIT:],
+            cadence_track_count=max(0, stored.get("cadence_track_count", 0))
+            if isinstance(stored.get("cadence_track_count"), int)
+            else 0,
+            cadence_target=max(0, stored.get("cadence_target", 0))
+            if isinstance(stored.get("cadence_target"), int)
+            else 0,
+            cadence_last_track=stored.get("cadence_last_track", "")
+            if isinstance(stored.get("cadence_last_track"), str)
+            else "",
         )
 
     def as_storage(self) -> dict[str, Any]:
@@ -72,6 +85,9 @@ class ControllerState:
             "enabled": self.enabled,
             "owned_queue_items": self.owned_queue_items,
             "recent_story_ids": list(self.recent_story_ids[-RECENT_STORY_LIMIT:]),
+            "cadence_track_count": self.cadence_track_count,
+            "cadence_target": self.cadence_target,
+            "cadence_last_track": self.cadence_last_track,
         }
 
 
@@ -89,6 +105,13 @@ class AiDjRuntime:
     _schedule_unsub: Any = None
     _player_unsub: Any = None
     _preparing_boundary: str | None = None
+    _preparing_cadence: bool = False
+    _preparation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    _state_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    _operation_generation: int = 0
+    _cadence_track_count: int = 0
+    _cadence_target: int = 0
+    _cadence_last_track: str = ""
     _announcement: AnnouncementController = field(init=False)
     _ma_client: MusicAssistantClient | None = None
     _ma_listener_task: Any = None
@@ -126,14 +149,42 @@ class AiDjRuntime:
         self._enabled = state.enabled
         self._owned_queue_items = state.owned_queue_items
         self._recent_story_ids = list(state.recent_story_ids)
+        self._cadence_track_count = state.cadence_track_count
+        self._cadence_target = state.cadence_target
+        self._cadence_last_track = state.cadence_last_track
+        if any(
+            metadata.get("delete_pending") == "true"
+            for metadata in self._owned_queue_items.values()
+        ):
+            pending_ids = {
+                item_id
+                for item_id, metadata in self._owned_queue_items.items()
+                if metadata.get("delete_pending") == "true"
+            }
+            await self._async_remove_owned_item_ids(pending_ids)
+        current_state = self.hass.states.get(self.player_entity_id)
+        if not self._cadence_last_track and current_state is not None:
+            self._cadence_last_track = track_identity(current_state) or ""
+        settings = self.settings
+        cadence_changed = False
+        if not settings.cadence_enabled:
+            cadence_changed = bool(self._cadence_track_count or self._cadence_target)
+            self._cadence_track_count = 0
+            self._cadence_target = 0
+            await self._async_remove_owned_items(kind="cadence")
+        elif not settings.cadence_min_tracks <= self._cadence_target <= settings.cadence_max_tracks:
+            self._cadence_track_count = 0
+            self._cadence_target = self._choose_cadence_target()
+            cadence_changed = True
         self._schedule_unsub = event_helper.async_track_time_change(
             self.hass, self._async_handle_schedule, minute={25, 55}, second=0
         )
         self._player_unsub = event_helper.async_track_state_change_event(
             self.hass, self.player_entity_id, self._async_handle_player_state_changed
         )
-        if self._enabled:
-            await self._async_recover_controller()
+        if cadence_changed:
+            await self._async_save_controller_state()
+        await self._async_recover_controller()
 
     async def async_set_enabled(self, enabled: bool) -> None:
         """Enable or disable scheduled station breaks."""
@@ -144,7 +195,11 @@ class AiDjRuntime:
         self._enabled = enabled
         await self._async_save_controller_state()
         if not enabled:
+            self._operation_generation += 1
             self._preparing_boundary = None
+            self._preparing_cadence = False
+            self._cadence_track_count = 0
+            self._cadence_target = 0
             await self._async_remove_owned_queue_items()
         else:
             # Preparation is driven by the next :25/:55 time callback.
@@ -243,6 +298,9 @@ class AiDjRuntime:
             enabled=self._enabled,
             owned_queue_items=self._owned_queue_items,
             recent_story_ids=tuple(self._recent_story_ids),
+            cadence_track_count=self._cadence_track_count,
+            cadence_target=self._cadence_target,
+            cadence_last_track=self._cadence_last_track,
         )
         await self._store.async_save(state.as_storage())
 
@@ -274,29 +332,73 @@ class AiDjRuntime:
         state = self.hass.states.get(self.player_entity_id)
         return state is not None and state.state == STATE_PLAYING
 
+    def _choose_cadence_target(self) -> int:
+        """Choose the next song-count target from normalized station options."""
+        settings = self.settings
+        return randint(settings.cadence_min_tracks, settings.cadence_max_tracks)
+
+    def _reset_cadence(self) -> None:
+        """Start a fresh cadence window after one successful announcement."""
+        self._cadence_track_count = 0
+        self._cadence_target = self._choose_cadence_target()
+
+    @staticmethod
+    def _is_aidj_announcement(state: Any) -> bool:
+        """Return whether a player state describes AI DJ's inserted audio item."""
+        attributes = getattr(state, "attributes", {})
+        title = str(attributes.get("media_title", ""))
+        content_id = str(attributes.get("media_content_id", ""))
+        return title == "AI DJ Announcement" or "AI DJ Announcement" in content_id
+
     async def _async_prepare_boundary(self, target: datetime) -> None:
-        """Generate and queue one fresh briefing for a clock boundary."""
+        """Serialize generation and queueing of one clock briefing."""
+        async with self._preparation_lock:
+            await self._async_prepare_boundary_locked(target)
+
+    async def _async_prepare_boundary_locked(self, target: datetime) -> None:
+        """Generate and queue one fresh briefing while holding the operation lock."""
         boundary = target.isoformat()
         if not self._enabled or not self.music_assistant_enabled:
+            return
+        await self._async_remove_owned_items(kind="cadence")
+        if any("cadence" in metadata for metadata in self._owned_queue_items.values()):
+            _LOGGER.warning(
+                "Skipping scheduled AI DJ briefing for station %s because a cadence item "
+                "could not be removed",
+                self.name,
+            )
             return
         if self._has_prepared_boundary(boundary) or self._preparing_boundary == boundary:
             return
         if not self._is_player_playing():
             return
         self._preparing_boundary = boundary
+        operation_generation = self._operation_generation
         try:
             briefing = await self._async_generate_briefing(
                 self.settings.weather_entity_id,
                 self.settings.agent_id,
             )
-            if not self._enabled or not self._is_player_playing():
+            if (
+                operation_generation != self._operation_generation
+                or not self._enabled
+                or not self._is_player_playing()
+            ):
                 return
             queue_item_id = await self.async_queue_announcement_next(briefing.text)
+            if operation_generation != self._operation_generation:
+                self._owned_queue_items[queue_item_id] = {
+                    "boundary": boundary,
+                    "created_at": dt_util.now().isoformat(),
+                }
+                await self._async_remove_owned_items()
+                return
             self._owned_queue_items[queue_item_id] = {
                 "boundary": boundary,
                 "created_at": dt_util.now().isoformat(),
             }
             self._record_story(briefing.selected_story_id)
+            self._reset_cadence()
             await self._async_save_controller_state()
         except Exception:  # noqa: BLE001 - failed preparation must not interrupt music
             _LOGGER.exception(
@@ -308,28 +410,154 @@ class AiDjRuntime:
             self._preparing_boundary = None
 
     async def _async_handle_player_state_changed(self, event: Event) -> None:
-        """Remove owned breaks whenever playback is no longer active."""
+        """Track completed songs for cadence and clean up when playback stops."""
         new_state = event.data.get("new_state")
-        if new_state is not None and new_state.state == STATE_PLAYING:
+        if new_state is None or new_state.state != STATE_PLAYING:
+            self._operation_generation += 1
+            self._preparing_boundary = None
+            self._preparing_cadence = False
+            await self._async_remove_owned_queue_items()
             return
-        self._preparing_boundary = None
-        await self._async_remove_owned_queue_items()
-
-    async def _async_remove_owned_queue_items(self) -> None:
-        """Remove only queue items created by this station."""
-        if not self._owned_queue_items:
+        current = track_identity(new_state)
+        if current is None or current == self._cadence_last_track:
+            return
+        old_state = event.data.get("old_state")
+        self._cadence_last_track = current
+        if self._is_aidj_announcement(new_state):
+            await self._async_retire_playing_announcement()
+            return
+        if (
+            old_state is None
+            or old_state.state != STATE_PLAYING
+            or track_identity(old_state) is None
+            or self._is_aidj_announcement(old_state)
+        ):
             await self._async_save_controller_state()
             return
-        item_ids = list(self._owned_queue_items)
-        self._owned_queue_items.clear()
+        settings = self.settings
+        if not self._enabled or not settings.cadence_enabled:
+            await self._async_save_controller_state()
+            return
+        self._cadence_track_count += 1
+        if self._cadence_target <= 0:
+            self._cadence_target = self._choose_cadence_target()
+        await self._async_save_controller_state()
+        if self._cadence_track_count >= self._cadence_target:
+            await self._async_prepare_cadence()
+
+    async def _async_prepare_cadence(self) -> None:
+        """Serialize generation and queueing of one cadence transition."""
+        async with self._preparation_lock:
+            await self._async_prepare_cadence_locked()
+
+    async def _async_prepare_cadence_locked(self) -> None:
+        """Generate one cadence transition while holding the operation lock."""
+        if self._preparing_cadence or self._preparing_boundary is not None:
+            return
+        if self._has_prepared_boundary_for_any_time():
+            return
+        self._preparing_cadence = True
+        operation_generation = self._operation_generation
+        try:
+            settings = self.settings
+            generator = BriefingGenerationService(
+                self.hass,
+                settings,
+                self.player_entity_id,
+                self._ma_client,
+                self._recent_story_ids,
+            )
+            if settings.cadence_content == CADENCE_CONTENT_FULL:
+                briefing = await generator.async_generate(
+                    settings.weather_entity_id,
+                    settings.agent_id,
+                )
+            else:
+                briefing = await generator.async_generate_music_transition(
+                    settings.agent_id
+                )
+            if (
+                operation_generation != self._operation_generation
+                or not self._enabled
+                or not self._is_player_playing()
+            ):
+                return
+            queue_item_id = await self.async_queue_announcement_next(briefing.text)
+            if operation_generation != self._operation_generation:
+                self._owned_queue_items[queue_item_id] = {
+                    "cadence": "true",
+                    "created_at": dt_util.now().isoformat(),
+                }
+                await self._async_remove_owned_items()
+                return
+            self._owned_queue_items[queue_item_id] = {
+                "cadence": "true",
+                "created_at": dt_util.now().isoformat(),
+            }
+            self._record_story(briefing.selected_story_id)
+            self._reset_cadence()
+            await self._async_save_controller_state()
+        except Exception:  # noqa: BLE001 - cadence failure must not interrupt music
+            _LOGGER.exception(
+                "AI DJ cadence transition failed for station %s on %s; retrying after "
+                "the next song",
+                self.name,
+                self.player_entity_id,
+            )
+        finally:
+            self._preparing_cadence = False
+
+    def _has_prepared_boundary_for_any_time(self) -> bool:
+        """Return whether a scheduled clock briefing is already queued."""
+        return any("boundary" in metadata for metadata in self._owned_queue_items.values())
+
+    async def _async_retire_playing_announcement(self) -> None:
+        """Forget the oldest owned item once its audio has begun playing."""
+        if not self._owned_queue_items:
+            return
+        item_id = min(
+            self._owned_queue_items,
+            key=lambda key: self._owned_queue_items[key].get("created_at", ""),
+        )
+        self._owned_queue_items.pop(item_id, None)
+        await self._async_save_controller_state()
+
+    async def _async_remove_owned_queue_items(self) -> None:
+        """Remove every queue item created by this station."""
+        await self._async_remove_owned_items()
+
+    async def _async_remove_owned_items(self, kind: str | None = None) -> None:
+        """Delete selected owned items, retaining records when deletion cannot run."""
+        item_ids = [
+            item_id
+            for item_id, metadata in self._owned_queue_items.items()
+            if kind is None or kind in metadata
+        ]
+        if not item_ids:
+            await self._async_save_controller_state()
+            return
+        for item_id in item_ids:
+            self._owned_queue_items[item_id]["delete_pending"] = "true"
         await self._async_save_controller_state()
         if self._ma_queue is None:
             return
+        await self._async_remove_owned_item_ids(set(item_ids))
+
+    async def _async_remove_owned_item_ids(self, item_ids: set[str]) -> None:
+        """Attempt deletion of already-marked items and persist confirmed removals."""
+        if self._ma_queue is None:
+            return
+        changed = False
         for item_id in item_ids:
             try:
                 await self._ma_queue.async_remove(item_id)
-            except Exception:  # noqa: BLE001 - item may already have played or vanished
-                _LOGGER.debug("AI DJ queue item %s was already unavailable", item_id)
+            except Exception:  # noqa: BLE001 - retain ownership for a later retry
+                _LOGGER.debug("AI DJ queue item %s could not be removed yet", item_id)
+                continue
+            self._owned_queue_items.pop(item_id, None)
+            changed = True
+        if changed:
+            await self._async_save_controller_state()
 
     async def async_queue_announcement_next(self, message: str) -> str:
         """Render a briefing and insert it as the next MA queue item."""
@@ -419,6 +647,7 @@ class AiDjRuntime:
     @callback
     def async_unload(self) -> None:
         """Cancel listeners and stop native MA transport during unload."""
+        self._operation_generation += 1
         self._announcement.async_cancel()
         if self._schedule_unsub is not None:
             self._schedule_unsub()

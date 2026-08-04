@@ -47,7 +47,9 @@
   },
   "options": {
     "error": {
-      "custom_personality_required": "Enter custom personality instructions or choose a preset."
+      "custom_personality_required": "Enter custom personality instructions or choose a preset.",
+      "cadence_max_below_min": "Maximum songs must be greater than or equal to minimum songs.",
+      "cadence_invalid_range": "Enter valid song counts between 1 and 20."
     },
     "step": {
       "init": {
@@ -59,12 +61,16 @@
           "tts": "TTS entity",
           "weather_entity_id": "Weather entity",
           "agent_id": "Conversation agent",
-          "feed_entity_ids": "Local news feeds",
+          "feed_entity_ids": "News feeds",
           "calendar_entity_ids": "Calendars",
           "aqi_entity_id": "Air quality sensor",
           "aqi_relevance_threshold": "AQI relevance threshold",
           "personality": "DJ personality",
-          "custom_personality": "Custom personality instructions (used only when Custom is selected)"
+          "custom_personality": "Custom personality instructions (used only when Custom is selected)",
+          "cadence_enabled": "Track-count DJ transitions",
+          "cadence_min_tracks": "Minimum songs between transitions",
+          "cadence_max_tracks": "Maximum songs between transitions",
+          "cadence_content": "Transition content"
         }
       }
     }

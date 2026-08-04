@@ -31,10 +31,18 @@ from .const import (
     CONF_WEATHER,
     CONF_PERSONALITY,
     CONF_CUSTOM_PERSONALITY,
+    CONF_CADENCE_ENABLED,
+    CONF_CADENCE_MIN_TRACKS,
+    CONF_CADENCE_MAX_TRACKS,
+    CONF_CADENCE_CONTENT,
+    CADENCE_CONTENT_MUSIC,
+    CADENCE_CONTENT_FULL,
     CUSTOM_PERSONALITY,
     DEFAULT_MA_URL,
     DEFAULT_NAME,
     DEFAULT_PERSONALITY,
+    DEFAULT_CADENCE_MIN_TRACKS,
+    DEFAULT_CADENCE_MAX_TRACKS,
     DOMAIN,
     PERSONALITY_INSTRUCTIONS,
     PERSONALITY_LABELS,
@@ -42,14 +50,27 @@ from .const import (
 )
 
 
-def _personality_errors(values: dict[str, Any]) -> dict[str, str]:
-    """Validate relationships between personality option fields."""
+def _options_errors(values: dict[str, Any]) -> dict[str, str]:
+    """Validate relationships between station option fields."""
+    errors: dict[str, str] = {}
     if (
         values.get(CONF_PERSONALITY) == CUSTOM_PERSONALITY
         and not str(values.get(CONF_CUSTOM_PERSONALITY, "")).strip()
     ):
-        return {CONF_CUSTOM_PERSONALITY: "custom_personality_required"}
-    return {}
+        errors[CONF_CUSTOM_PERSONALITY] = "custom_personality_required"
+    try:
+        cadence_min = int(
+            values.get(CONF_CADENCE_MIN_TRACKS, DEFAULT_CADENCE_MIN_TRACKS)
+        )
+        cadence_max = int(
+            values.get(CONF_CADENCE_MAX_TRACKS, DEFAULT_CADENCE_MAX_TRACKS)
+        )
+    except (TypeError, ValueError):
+        errors[CONF_CADENCE_MAX_TRACKS] = "cadence_invalid_range"
+    else:
+        if cadence_max < cadence_min:
+            errors[CONF_CADENCE_MAX_TRACKS] = "cadence_max_below_min"
+    return errors
 
 
 def _normalized_credentials(values: dict[str, Any]) -> dict[str, str]:
@@ -298,7 +319,7 @@ class AiDjOptionsFlow(config_entries.OptionsFlow):
         """Handle station options without shared credentials."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            errors = _personality_errors(user_input)
+            errors = _options_errors(user_input)
             if not errors:
                 return self.async_create_entry(title="", data=user_input)
 
@@ -369,6 +390,34 @@ class AiDjOptionsFlow(config_entries.OptionsFlow):
                     },
                 ): selector.TextSelector(
                     {"multiline": True, "type": selector.TextSelectorType.TEXT}
+                ),
+                vol.Required(
+                    CONF_CADENCE_ENABLED,
+                    default=normalized.cadence_enabled,
+                ): selector.BooleanSelector(),
+                vol.Required(
+                    CONF_CADENCE_MIN_TRACKS,
+                    default=normalized.cadence_min_tracks,
+                ): selector.NumberSelector(
+                    {"min": 1, "max": 20, "step": 1, "mode": "box"}
+                ),
+                vol.Required(
+                    CONF_CADENCE_MAX_TRACKS,
+                    default=normalized.cadence_max_tracks,
+                ): selector.NumberSelector(
+                    {"min": 1, "max": 20, "step": 1, "mode": "box"}
+                ),
+                vol.Required(
+                    CONF_CADENCE_CONTENT,
+                    default=normalized.cadence_content,
+                ): selector.SelectSelector(
+                    {
+                        "options": [
+                            {"value": CADENCE_CONTENT_MUSIC, "label": "Music transition"},
+                            {"value": CADENCE_CONTENT_FULL, "label": "Full briefing"},
+                        ],
+                        "mode": selector.SelectSelectorMode.DROPDOWN,
+                    }
                 ),
             }
         )

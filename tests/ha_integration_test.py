@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -14,14 +14,16 @@ from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import event as event_helper
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components import aidj
 from custom_components.aidj.ha_music_assistant import HaMusicAssistantQueue
-from custom_components.aidj.config_flow import _personality_errors
+from custom_components.aidj.config_flow import _options_errors
 from custom_components.aidj.music_assistant import MusicAssistantQueueAdapter
 from custom_components.aidj.music_context import QueueContext, TrackContext
 from custom_components.aidj.briefing_assembly import BriefingCollection, build_briefing_providers
+from custom_components.aidj.briefing_generation import BriefingGenerationService, GeneratedBriefing
 from custom_components.aidj.prompt import (
     briefing_needs_grounding_retry,
     build_briefing_prompt,
@@ -56,6 +58,12 @@ from custom_components.aidj.const import (
     CONF_WEATHER,
     CONF_PERSONALITY,
     CONF_CUSTOM_PERSONALITY,
+    CONF_CADENCE_ENABLED,
+    CONF_CADENCE_MIN_TRACKS,
+    CONF_CADENCE_MAX_TRACKS,
+    CONF_CADENCE_CONTENT,
+    CADENCE_CONTENT_FULL,
+    CADENCE_CONTENT_MUSIC,
     DEFAULT_PERSONALITY,
     DOMAIN,
     RECENT_STORY_LIMIT,
@@ -84,6 +92,10 @@ def test_station_settings_normalizes_effective_config() -> None:
             CONF_FEEDS: [" event.news ", "", 7],
             CONF_CALENDARS: (" calendar.home ",),
             CONF_AQI_THRESHOLD: "151",
+            CONF_CADENCE_ENABLED: True,
+            CONF_CADENCE_MIN_TRACKS: 2,
+            CONF_CADENCE_MAX_TRACKS: 6,
+            CONF_CADENCE_CONTENT: CADENCE_CONTENT_FULL,
         }
     )
 
@@ -94,6 +106,9 @@ def test_station_settings_normalizes_effective_config() -> None:
     assert settings.aqi_relevance_threshold == 151.0
     assert settings.personality == DEFAULT_PERSONALITY
     assert "balanced radio-host" in settings.personality_instructions
+    assert settings.cadence_enabled is True
+    assert (settings.cadence_min_tracks, settings.cadence_max_tracks) == (2, 6)
+    assert settings.cadence_content == CADENCE_CONTENT_FULL
     assert settings.music_assistant_enabled is True
 
 
@@ -131,6 +146,9 @@ def test_station_settings_defaults_malformed_optional_values() -> None:
     assert settings.feed_entity_ids == ()
     assert settings.calendar_entity_ids == ()
     assert settings.aqi_relevance_threshold == 101.0
+    assert settings.cadence_enabled is False
+    assert (settings.cadence_min_tracks, settings.cadence_max_tracks) == (3, 5)
+    assert settings.cadence_content == CADENCE_CONTENT_MUSIC
     assert settings.music_assistant_enabled is False
     assert StationSettings.from_mapping({CONF_AQI_THRESHOLD: "nan"}).aqi_relevance_threshold == 101.0
     assert StationSettings.from_mapping({CONF_AQI_THRESHOLD: "501"}).aqi_relevance_threshold == 101.0
@@ -880,13 +898,20 @@ async def test_calendar_provider_skips_missing_and_distant_events(
 ) -> None:
     """Calendar relevance keeps only today/tomorrow events."""
     hass.states.async_set("calendar.home", "on", {"friendly_name": "Home"})
+    today = dt_util.now().date()
     get_events = AsyncMock(
         return_value={
             "calendar.home": {
                 "events": [
-                    {"summary": "Today", "start": {"date": "2026-07-31"}},
-                    {"summary": "Tomorrow", "start": {"date": "2026-08-01"}},
-                    {"summary": "Later", "start": {"date": "2026-08-05"}},
+                    {"summary": "Today", "start": {"date": today.isoformat()}},
+                    {
+                        "summary": "Tomorrow",
+                        "start": {"date": (today + timedelta(days=1)).isoformat()},
+                    },
+                    {
+                        "summary": "Later",
+                        "start": {"date": (today + timedelta(days=5)).isoformat()},
+                    },
                 ]
             }
         }
@@ -1208,6 +1233,14 @@ async def test_options_flow_exposes_briefing_source_fields(
     )
     assert custom_marker.default is vol.UNDEFINED
     assert custom_marker.description["suggested_value"] == "Can this be deleted?"
+    assert CONF_CADENCE_ENABLED in result["data_schema"].schema
+    assert CONF_CADENCE_MIN_TRACKS in result["data_schema"].schema
+    assert CONF_CADENCE_MAX_TRACKS in result["data_schema"].schema
+    assert CONF_CADENCE_CONTENT in result["data_schema"].schema
+    assert {
+        option["value"]
+        for option in result["data_schema"].schema[CONF_CADENCE_CONTENT].config["options"]
+    } == {CADENCE_CONTENT_MUSIC, CADENCE_CONTENT_FULL}
     threshold_marker = next(
         marker
         for marker in result["data_schema"].schema
@@ -1223,15 +1256,21 @@ async def test_options_flow_exposes_briefing_source_fields(
     assert "home_assistant_token" not in result["data_schema"].schema
     assert "music_assistant_player" not in result["data_schema"].schema
 
-    assert _personality_errors(
+    assert _options_errors(
         {CONF_PERSONALITY: "custom", CONF_CUSTOM_PERSONALITY: "   "}
     ) == {CONF_CUSTOM_PERSONALITY: "custom_personality_required"}
-    assert _personality_errors(
+    assert _options_errors(
         {
             CONF_PERSONALITY: "custom",
             CONF_CUSTOM_PERSONALITY: "Measured, playful, and concise.",
         }
     ) == {}
+    assert _options_errors(
+        {CONF_CADENCE_MIN_TRACKS: 6, CONF_CADENCE_MAX_TRACKS: 2}
+    ) == {CONF_CADENCE_MAX_TRACKS: "cadence_max_below_min"}
+    assert _options_errors(
+        {CONF_CADENCE_MIN_TRACKS: None, CONF_CADENCE_MAX_TRACKS: "invalid"}
+    ) == {CONF_CADENCE_MAX_TRACKS: "cadence_invalid_range"}
 
 
 @pytest.mark.asyncio
@@ -1688,6 +1727,64 @@ async def test_briefing_service_returns_generated_text_without_playback(
 
 
 @pytest.mark.asyncio
+async def test_music_transition_generation_uses_verified_queue_without_weather(
+    hass: HomeAssistant,
+) -> None:
+    """Music cadence uses queue facts and personality without collecting weather."""
+    settings = StationSettings.from_mapping(
+        {
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+            CONF_AGENT: "conversation.agent",
+            CONF_MA_URL: "http://ma.local:8095",
+            CONF_MA_TOKEN: "ma-secret",
+            CONF_HA_TOKEN: "ha-secret",
+            CONF_MA_PLAYER: "wiim-player",
+        }
+    )
+    queue_item = BriefingItem(
+        provider="music_assistant_queue",
+        title="Music context",
+        summary="Verified Music Assistant queue context",
+        music_context=QueueContext(
+            current=TrackContext("Current Song", "Current Artist"),
+            next=(TrackContext("Next Song", "Next Artist"),),
+        ),
+    )
+    conversation = AsyncMock(
+        return_value={
+            "response": {
+                "speech": {
+                    "plain": {
+                        "speech": "Current Song by Current Artist just played; Next Song is next."
+                    }
+                }
+            }
+        }
+    )
+    hass.services.async_register(
+        "conversation",
+        "process",
+        conversation,
+        supports_response=SupportsResponse.ONLY,
+    )
+    service = BriefingGenerationService(hass, settings, settings.player_entity_id, object(), ())
+    with patch(
+        "custom_components.aidj.briefing_generation.QueueProvider.async_collect",
+        new=AsyncMock(return_value=[queue_item]),
+    ):
+        generated = await service.async_generate_music_transition("")
+
+    assert generated.text.startswith("Current Song")
+    prompt = conversation.await_args.args[0].data["text"]
+    assert "no non-music topics" in prompt
+    assert "Current Song by Current Artist" in prompt
+    assert "Upcoming track: Next Song by Next Artist" in prompt
+    assert "Weather" not in prompt
+
+
+@pytest.mark.asyncio
 async def test_native_briefing_rejects_missing_music_context(
     hass: HomeAssistant,
 ) -> None:
@@ -2085,6 +2182,48 @@ async def test_music_assistant_listener_reconnects_after_failure(
     runtime.async_unload()
 
 
+@pytest.mark.asyncio
+async def test_cadence_target_resets_when_options_change(
+    hass: HomeAssistant,
+) -> None:
+    """Persisted targets outside new option bounds are reset and saved."""
+    from custom_components.aidj.runtime import AiDjRuntime
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+        },
+        options={
+            CONF_CADENCE_ENABLED: True,
+            CONF_CADENCE_MIN_TRACKS: 1,
+            CONF_CADENCE_MAX_TRACKS: 1,
+        },
+    )
+    runtime = AiDjRuntime(hass, entry)
+    remove = AsyncMock()
+    runtime._ma_queue = type("Queue", (), {"async_remove": remove})()
+    store = AsyncMock()
+    store.async_load.return_value = {
+        "owned_queue_items": {
+            "stale-item": {"cadence": "true", "delete_pending": "true"}
+        },
+        "cadence_track_count": 4,
+        "cadence_target": 5,
+    }
+    with patch("custom_components.aidj.runtime.Store", return_value=store):
+        await runtime.async_initialize_controller()
+
+    assert runtime._cadence_track_count == 0
+    assert runtime._cadence_target == 1
+    assert runtime._owned_queue_items == {}
+    remove.assert_awaited_once_with("stale-item")
+    store.async_save.assert_awaited()
+    runtime.async_unload()
+
+
 def test_controller_state_rejects_malformed_storage_and_clamps_history() -> None:
     """Persisted controller data is validated before entering runtime state."""
     from custom_components.aidj.runtime import ControllerState
@@ -2180,11 +2319,18 @@ async def test_controller_prepares_once_at_half_hour_window_and_persists_enabled
         await runtime.async_initialize_controller()
         await runtime.async_set_enabled(True)
         assert runtime.enabled is True
+        runtime._cadence_track_count = 4
+        runtime._cadence_target = 4
+        runtime._owned_queue_items["old-cadence"] = {
+            "cadence": "true",
+            "created_at": "2026-07-31T12:20:00+00:00",
+        }
         boundary = datetime(2026, 7, 31, 12, 25, tzinfo=timezone.utc)
         await runtime._async_handle_schedule(boundary)
         await runtime._async_handle_schedule(boundary)
 
     generate.assert_awaited_once_with("weather.forecast_home", "conversation.agent")
+    runtime._ma_queue.async_remove.assert_awaited_once_with("old-cadence")
     assert (await runtime._store.async_load())["enabled"] is True
     assert runtime._owned_queue_items == {
         "queue-item-1": {
@@ -2192,7 +2338,281 @@ async def test_controller_prepares_once_at_half_hour_window_and_persists_enabled
             "created_at": runtime._owned_queue_items["queue-item-1"]["created_at"],
         }
     }
+    assert runtime._cadence_track_count == 0
+    assert 3 <= runtime._cadence_target <= 5
     runtime.async_unload()
+
+
+@pytest.mark.asyncio
+async def test_disable_invalidates_inflight_clock_generation(
+    hass: HomeAssistant,
+) -> None:
+    """A briefing generated before disable cannot queue after disable completes."""
+    from custom_components.aidj.runtime import AiDjRuntime
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+            CONF_MA_URL: "http://ma.local:8095",
+            CONF_MA_TOKEN: "ma-secret",
+            CONF_HA_TOKEN: "ha-secret",
+            CONF_MA_PLAYER: "wiim-player",
+        },
+        options={CONF_WEATHER: "weather.home", CONF_AGENT: "conversation.agent"},
+    )
+    player = entry.data[CONF_PLAYER]
+    _set_playing_track(hass, player, "library://track/one", "One")
+    runtime = AiDjRuntime(hass, entry)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_generate(*args):
+        started.set()
+        await release.wait()
+        return GeneratedBriefing("Too late")
+
+    queue = AsyncMock(return_value="clock-item")
+    with patch.object(AiDjRuntime, "_async_generate_briefing", delayed_generate), patch.object(
+        AiDjRuntime, "async_queue_announcement_next", queue
+    ):
+        await runtime.async_initialize_controller()
+        await runtime.async_set_enabled(True)
+        task = hass.async_create_task(
+            runtime._async_prepare_boundary(
+                datetime(2026, 8, 4, 12, 30, tzinfo=timezone.utc)
+            )
+        )
+        await started.wait()
+        await runtime.async_set_enabled(False)
+        release.set()
+        await task
+
+    queue.assert_not_awaited()
+    assert runtime._owned_queue_items == {}
+    runtime.async_unload()
+
+
+@pytest.mark.asyncio
+async def test_disable_during_queue_insertion_removes_stale_item(
+    hass: HomeAssistant,
+) -> None:
+    """An item inserted after disable is immediately removed and never committed."""
+    from custom_components.aidj.runtime import AiDjRuntime
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+            CONF_MA_URL: "http://ma.local:8095",
+            CONF_MA_TOKEN: "ma-secret",
+            CONF_HA_TOKEN: "ha-secret",
+            CONF_MA_PLAYER: "wiim-player",
+        },
+        options={CONF_WEATHER: "weather.home", CONF_AGENT: "conversation.agent"},
+    )
+    player = entry.data[CONF_PLAYER]
+    _set_playing_track(hass, player, "library://track/one", "One")
+    runtime = AiDjRuntime(hass, entry)
+    insert_started = asyncio.Event()
+    insert_release = asyncio.Event()
+    remove = AsyncMock()
+    runtime._ma_queue = type("Queue", (), {"async_remove": remove})()
+
+    async def delayed_insert(self, message):
+        insert_started.set()
+        await insert_release.wait()
+        return "late-item"
+
+    with patch.object(
+        AiDjRuntime,
+        "_async_generate_briefing",
+        new=AsyncMock(return_value=GeneratedBriefing("Ready")),
+    ), patch.object(AiDjRuntime, "async_queue_announcement_next", delayed_insert):
+        await runtime.async_initialize_controller()
+        await runtime.async_set_enabled(True)
+        task = hass.async_create_task(
+            runtime._async_prepare_boundary(
+                datetime(2026, 8, 4, 12, 30, tzinfo=timezone.utc)
+            )
+        )
+        await asyncio.wait_for(insert_started.wait(), timeout=1)
+        await runtime.async_set_enabled(False)
+        insert_release.set()
+        await task
+
+    remove.assert_awaited_once_with("late-item")
+    assert runtime._owned_queue_items == {}
+    runtime.async_unload()
+
+
+@pytest.mark.asyncio
+async def test_cadence_counts_tracks_and_queues_music_transition(
+    hass: HomeAssistant,
+) -> None:
+    """Cadence queues once at its target and ignores AI DJ announcement tracks."""
+    from custom_components.aidj.runtime import AiDjRuntime
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+        },
+        options={
+            CONF_CADENCE_ENABLED: True,
+            CONF_CADENCE_MIN_TRACKS: 2,
+            CONF_CADENCE_MAX_TRACKS: 2,
+            CONF_CADENCE_CONTENT: CADENCE_CONTENT_MUSIC,
+            CONF_AGENT: "conversation.agent",
+        },
+    )
+    player = entry.data[CONF_PLAYER]
+    _set_playing_track(hass, player, "library://track/one", "One")
+    runtime = AiDjRuntime(hass, entry)
+    generate = AsyncMock(return_value=GeneratedBriefing("Two was great; Three is next."))
+    queue = AsyncMock(return_value="cadence-item")
+    with patch.object(
+        BriefingGenerationService,
+        "async_generate_music_transition",
+        generate,
+    ), patch.object(AiDjRuntime, "async_queue_announcement_next", queue):
+        await runtime.async_initialize_controller()
+        await runtime.async_set_enabled(True)
+        hass.states.async_set(player, STATE_IDLE)
+        await hass.async_block_till_done()
+        _set_playing_track(hass, player, "library://track/resumed", "Resumed")
+        await hass.async_block_till_done()
+        assert runtime._cadence_track_count == 0
+        _set_playing_track(hass, player, "library://track/two", "Two")
+        await hass.async_block_till_done()
+        _set_playing_track(hass, player, "builtin://aidj", "AI DJ Announcement")
+        await hass.async_block_till_done()
+        _set_playing_track(hass, player, "library://track/three", "Three")
+        await hass.async_block_till_done()
+        _set_playing_track(hass, player, "library://track/four", "Four")
+        await hass.async_block_till_done()
+
+    generate.assert_awaited_once_with("conversation.agent")
+    queue.assert_awaited_once_with("Two was great; Three is next.")
+    assert runtime._cadence_track_count == 0
+    assert runtime._cadence_target == 2
+    assert runtime._owned_queue_items["cadence-item"]["cadence"] == "true"
+    runtime.async_unload()
+
+
+@pytest.mark.asyncio
+async def test_playing_announcement_retires_owned_clock_item(
+    hass: HomeAssistant,
+) -> None:
+    """A consumed scheduled briefing cannot suppress cadence forever."""
+    from custom_components.aidj.runtime import AiDjRuntime
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+        },
+    )
+    player = entry.data[CONF_PLAYER]
+    _set_playing_track(hass, player, "library://track/one", "One")
+    runtime = AiDjRuntime(hass, entry)
+    await runtime.async_initialize_controller()
+    runtime._owned_queue_items = {
+        "clock-item": {"boundary": "noon", "created_at": "2026-08-04T12:00:00Z"}
+    }
+
+    _set_playing_track(hass, player, "builtin://aidj", "AI DJ Announcement")
+    await hass.async_block_till_done()
+
+    assert runtime._owned_queue_items == {}
+    assert runtime._has_prepared_boundary_for_any_time() is False
+    runtime.async_unload()
+
+
+@pytest.mark.asyncio
+async def test_cadence_defers_for_clock_briefing_and_retries_after_failure(
+    hass: HomeAssistant,
+) -> None:
+    """Scheduled breaks win, while failed cadence remains due for the next song."""
+    from custom_components.aidj.runtime import AiDjRuntime
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+        },
+        options={
+            CONF_CADENCE_ENABLED: True,
+            CONF_CADENCE_MIN_TRACKS: 1,
+            CONF_CADENCE_MAX_TRACKS: 1,
+            CONF_AGENT: "conversation.agent",
+        },
+    )
+    player = entry.data[CONF_PLAYER]
+    _set_playing_track(hass, player, "library://track/one", "One")
+    runtime = AiDjRuntime(hass, entry)
+    generate = AsyncMock(
+        side_effect=[HomeAssistantError("temporary failure"), GeneratedBriefing("Ready")]
+    )
+    queue = AsyncMock(return_value="cadence-item")
+    with patch.object(
+        BriefingGenerationService,
+        "async_generate_music_transition",
+        generate,
+    ), patch.object(AiDjRuntime, "async_queue_announcement_next", queue):
+        await runtime.async_initialize_controller()
+        await runtime.async_set_enabled(True)
+        runtime._owned_queue_items["clock-item"] = {"boundary": "noon"}
+        _set_playing_track(hass, player, "library://track/two", "Two")
+        await hass.async_block_till_done()
+        assert generate.await_count == 0
+        runtime._owned_queue_items.clear()
+        _set_playing_track(hass, player, "library://track/three", "Three")
+        await hass.async_block_till_done()
+        assert runtime._cadence_track_count == 2
+        _set_playing_track(hass, player, "library://track/four", "Four")
+        await hass.async_block_till_done()
+
+    assert generate.await_count == 2
+    queue.assert_awaited_once_with("Ready")
+    assert runtime._cadence_track_count == 0
+    runtime.async_unload()
+
+
+@pytest.mark.asyncio
+async def test_owned_item_cleanup_retains_failed_deletions_for_retry(
+    hass: HomeAssistant,
+) -> None:
+    """Deletion failures keep ownership so a later cleanup can retry safely."""
+    from custom_components.aidj.runtime import AiDjRuntime
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+        },
+    )
+    runtime = AiDjRuntime(hass, entry)
+    remove = AsyncMock(side_effect=[RuntimeError("MA unavailable"), None])
+    runtime._ma_queue = type("Queue", (), {"async_remove": remove})()
+    runtime._owned_queue_items = {"cadence-item": {"cadence": "true"}}
+
+    await runtime._async_remove_owned_queue_items()
+    assert runtime._owned_queue_items["cadence-item"]["delete_pending"] == "true"
+    await runtime._async_remove_owned_queue_items()
+    assert runtime._owned_queue_items == {}
 
 
 @pytest.mark.asyncio

@@ -9,7 +9,7 @@ import logging
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
-from .briefing import HaConversationBriefingGenerator
+from .briefing import HaConversationBriefingGenerator, BriefingItem, QueueProvider
 from .briefing_assembly import async_collect_station_briefing
 from .const import (
     PROVIDER_FEEDREADER_PREFIX,
@@ -101,6 +101,41 @@ class BriefingGenerationService:
                 "the briefing was not generated"
             )
 
+        generated = await self._async_generate_grounded(items, agent_id, prompt)
+        return GeneratedBriefing(generated, selected_story.identity if selected_story else None)
+
+    async def async_generate_music_transition(self, agent_id: str) -> GeneratedBriefing:
+        """Generate a short transition from verified music context only."""
+        agent_id = (agent_id or self.settings.agent_id).strip()
+        if not agent_id:
+            raise ServiceValidationError("agent_id must not be empty")
+        provider = QueueProvider(
+            self.hass,
+            self.player_entity_id,
+            self.music_assistant_client,
+            self.music_assistant_player_id,
+        )
+        items = await provider.async_collect()
+        if not items:
+            raise HomeAssistantError(
+                "Music Assistant queue context was unavailable or inconsistent; "
+                "the transition was not generated"
+            )
+        prompt = (
+            "Write a brief radio DJ music transition that plays after the completed song. "
+            "Naturally identify the completed track and introduce at least one upcoming track. "
+            "Use two concise spoken sentences and no non-music topics."
+        )
+        generated = await self._async_generate_grounded(items, agent_id, prompt)
+        return GeneratedBriefing(generated)
+
+    async def _async_generate_grounded(
+        self,
+        items: Sequence[BriefingItem],
+        agent_id: str,
+        prompt: str | None,
+    ) -> str:
+        """Generate speech and retry once when exact music facts are omitted."""
         full_prompt = build_briefing_prompt(
             items,
             prompt,
@@ -123,4 +158,4 @@ class BriefingGenerationService:
                     "Conversation agent returned an announcement that did not use the supplied "
                     "music facts"
                 )
-        return GeneratedBriefing(generated, selected_story.identity if selected_story else None)
+        return generated

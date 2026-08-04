@@ -26,6 +26,10 @@ CONF_AQI: Final = "aqi_entity_id"
 CONF_AQI_THRESHOLD: Final = "aqi_relevance_threshold"
 CONF_PERSONALITY: Final = "personality"
 CONF_CUSTOM_PERSONALITY: Final = "custom_personality"
+CONF_CADENCE_ENABLED: Final = "cadence_enabled"
+CONF_CADENCE_MIN_TRACKS: Final = "cadence_min_tracks"
+CONF_CADENCE_MAX_TRACKS: Final = "cadence_max_tracks"
+CONF_CADENCE_CONTENT: Final = "cadence_content"
 CONF_CONFIG_ENTRY_ID: Final = "config_entry_id"
 
 ATTR_MESSAGE: Final = "message"
@@ -42,6 +46,10 @@ DEFAULT_NAME: Final = "AI DJ"
 DEFAULT_MA_URL: Final = "http://homeassistant.local:8095"
 DEFAULT_PERSONALITY: Final = "balanced"
 CUSTOM_PERSONALITY: Final = "custom"
+CADENCE_CONTENT_MUSIC: Final = "music"
+CADENCE_CONTENT_FULL: Final = "full"
+DEFAULT_CADENCE_MIN_TRACKS: Final = 3
+DEFAULT_CADENCE_MAX_TRACKS: Final = 5
 PERSONALITY_LABELS: Final[dict[str, str]] = {
     "balanced": "Balanced",
     "bright_brisk": "Bright & brisk",
@@ -85,6 +93,15 @@ PERSONALITY_INSTRUCTIONS: Final[dict[str, str]] = {
 RECENT_STORY_LIMIT: Final[int] = 10
 
 
+def _bounded_int(value: Any, default: int, minimum: int = 1, maximum: int = 20) -> int:
+    """Normalize one bounded integer option."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if minimum <= parsed <= maximum else default
+
+
 def _string_list(value: Any) -> tuple[str, ...]:
     """Normalize a config-entry multi-entity value to non-empty strings."""
     if not isinstance(value, (list, tuple)):
@@ -111,6 +128,10 @@ class StationSettings:
     aqi_relevance_threshold: float = 101.0
     personality: str = DEFAULT_PERSONALITY
     custom_personality: str = ""
+    cadence_enabled: bool = False
+    cadence_min_tracks: int = DEFAULT_CADENCE_MIN_TRACKS
+    cadence_max_tracks: int = DEFAULT_CADENCE_MAX_TRACKS
+    cadence_content: str = CADENCE_CONTENT_MUSIC
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, Any]) -> StationSettings:
@@ -131,6 +152,17 @@ class StationSettings:
         custom_personality = text(CONF_CUSTOM_PERSONALITY)
         if personality == CUSTOM_PERSONALITY and not custom_personality:
             personality = DEFAULT_PERSONALITY
+        cadence_min = _bounded_int(
+            values.get(CONF_CADENCE_MIN_TRACKS), DEFAULT_CADENCE_MIN_TRACKS
+        )
+        cadence_max = _bounded_int(
+            values.get(CONF_CADENCE_MAX_TRACKS), DEFAULT_CADENCE_MAX_TRACKS
+        )
+        if cadence_max < cadence_min:
+            cadence_max = cadence_min
+        cadence_content = text(CONF_CADENCE_CONTENT)
+        if cadence_content not in (CADENCE_CONTENT_MUSIC, CADENCE_CONTENT_FULL):
+            cadence_content = CADENCE_CONTENT_MUSIC
         return cls(
             name=text(CONF_NAME),
             player_entity_id=text(CONF_PLAYER),
@@ -147,6 +179,10 @@ class StationSettings:
             aqi_relevance_threshold=aqi_threshold,
             personality=personality,
             custom_personality=custom_personality,
+            cadence_enabled=values.get(CONF_CADENCE_ENABLED) is True,
+            cadence_min_tracks=cadence_min,
+            cadence_max_tracks=cadence_max,
+            cadence_content=cadence_content,
         )
 
     @property
