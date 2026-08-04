@@ -2949,10 +2949,59 @@ async def test_controller_removes_owned_items_when_playback_stops(
     runtime._owned_queue_items = {"queue-item-1": {"boundary": "boundary"}}
     await hass.async_block_till_done()
 
-    hass.states.async_set(player, STATE_IDLE)
-    await hass.async_block_till_done()
+    with patch("custom_components.aidj.runtime.asyncio.sleep", new=AsyncMock()):
+        hass.states.async_set(player, STATE_IDLE)
+        await hass.async_block_till_done()
 
     remove = runtime._ma_queue.async_remove
     remove.assert_awaited_once_with("queue-item-1")
     assert runtime._owned_queue_items == {}
+    runtime.async_unload()
+
+
+@pytest.mark.asyncio
+async def test_transient_stop_during_seek_preserves_owned_items(
+    hass: HomeAssistant,
+) -> None:
+    """A seek's STOPPED-to-PLAYING pulse must not delete a prepared break."""
+    from custom_components.aidj.runtime import AiDjRuntime
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+        },
+    )
+    entry.add_to_hass(hass)
+    player = entry.data[CONF_PLAYER]
+    _set_playing_track(hass, player, "library://track/current", "Current")
+    runtime = AiDjRuntime(hass, entry)
+    remove = AsyncMock()
+    runtime._ma_queue = type("Queue", (), {"async_remove": remove})()
+    await runtime.async_initialize_controller()
+    runtime._owned_queue_items = {
+        "jingle-item": {"boundary": "boundary"},
+        "announcement-item": {"boundary": "boundary"},
+    }
+    await hass.async_block_till_done()
+
+    sleep_started = asyncio.Event()
+    real_sleep = asyncio.sleep
+
+    async def wait_for_cleanup_delay(_: float) -> None:
+        sleep_started.set()
+        await asyncio.Event().wait()
+
+    with patch("custom_components.aidj.runtime.asyncio.sleep", side_effect=wait_for_cleanup_delay):
+        hass.states.async_set(player, STATE_IDLE)
+        await sleep_started.wait()
+        _set_playing_track(hass, player, "library://track/current", "Current")
+        for _ in range(3):
+            await real_sleep(0)
+
+    remove.assert_not_awaited()
+    assert set(runtime._owned_queue_items) == {"jingle-item", "announcement-item"}
+    assert runtime._stop_cleanup_task is None
     runtime.async_unload()

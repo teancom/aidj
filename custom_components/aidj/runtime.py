@@ -110,6 +110,7 @@ class AiDjRuntime:
     _store: Store[dict[str, Any]] | None = None
     _schedule_unsub: Any = None
     _player_unsub: Any = None
+    _stop_cleanup_task: asyncio.Task[Any] | None = None
     _preparing_boundary: str | None = None
     _preparing_cadence: bool = False
     _preparation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -423,15 +424,33 @@ class AiDjRuntime:
         finally:
             self._preparing_boundary = None
 
+    async def _async_cleanup_after_sustained_stop(self) -> None:
+        """Remove queued breaks only when playback remains stopped."""
+        try:
+            await asyncio.sleep(5)
+            if not self._is_player_playing():
+                await self._async_remove_owned_queue_items()
+        finally:
+            if self._stop_cleanup_task is asyncio.current_task():
+                self._stop_cleanup_task = None
+
     async def _async_handle_player_state_changed(self, event: Event) -> None:
-        """Track completed songs for cadence and clean up when playback stops."""
+        """Track completed songs and debounce destructive stop cleanup."""
         new_state = event.data.get("new_state")
         if new_state is None or new_state.state != STATE_PLAYING:
             self._operation_generation += 1
             self._preparing_boundary = None
             self._preparing_cadence = False
-            await self._async_remove_owned_queue_items()
+            if self._stop_cleanup_task is None:
+                self._stop_cleanup_task = self.entry.async_create_background_task(
+                    self.hass,
+                    self._async_cleanup_after_sustained_stop(),
+                    name="aidj_sustained_stop_cleanup",
+                )
             return
+        if self._stop_cleanup_task is not None:
+            self._stop_cleanup_task.cancel()
+            self._stop_cleanup_task = None
         current = track_identity(new_state)
         if current is None or current == self._cadence_last_track:
             return
@@ -678,6 +697,9 @@ class AiDjRuntime:
         if self._player_unsub is not None:
             self._player_unsub()
             self._player_unsub = None
+        if self._stop_cleanup_task is not None:
+            self._stop_cleanup_task.cancel()
+            self._stop_cleanup_task = None
         if self._ma_listener_task is not None:
             self._ma_listener_task.cancel()
             self._ma_listener_task = None
