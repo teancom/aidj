@@ -261,7 +261,9 @@ async def test_music_assistant_queue_adapter_inserts_ordered_sequence() -> None:
             "builtin://sound_effect/http://ha.local/jingle.mp3",
         ),
     ]
-    queues.get_queue_items = AsyncMock(side_effect=[[], inserted_items])
+    queues.get_queue_items = AsyncMock(
+        side_effect=[[], inserted_items[:1], inserted_items[:1], inserted_items]
+    )
     client = type("Client", (), {"player_queues": queues})()
 
     queue_ids = await MusicAssistantQueueAdapter(client, "player-1").async_insert_sequence(
@@ -282,12 +284,48 @@ async def test_music_assistant_queue_adapter_inserts_ordered_sequence() -> None:
     )
 
     assert queue_ids == ["jingle-id", "stinger-id"]
-    queues.play_media.assert_awaited_once()
-    call = queues.play_media.await_args.kwargs
-    assert call["option"] is QueueOption.NEXT
-    assert [track.name for track in call["media"]] == ["AI DJ Jingle", "AI DJ Stinger"]
-    assert [track.duration for track in call["media"]] == [2, 3]
-    assert all(track.media_type is MediaType.SOUND_EFFECT for track in call["media"])
+    assert queues.play_media.await_count == 2
+    calls = queues.play_media.await_args_list
+    assert all(call.kwargs["option"] is QueueOption.NEXT for call in calls)
+    assert [call.kwargs["media"][0].name for call in calls] == [
+        "AI DJ Stinger",
+        "AI DJ Jingle",
+    ]
+    assert [call.kwargs["media"][0].duration for call in calls] == [3, 2]
+    assert all(
+        call.kwargs["media"][0].media_type is MediaType.SOUND_EFFECT
+        for call in calls
+    )
+
+
+@pytest.mark.asyncio
+async def test_music_assistant_sequence_removes_partial_insert_on_failure() -> None:
+    """A failed later NEXT insertion removes earlier sequence rows."""
+    class Queue:
+        queue_id = "queue-1"
+
+    class Item:
+        queue_item_id = "stinger-id"
+        name = "AI DJ Stinger"
+        uri = "builtin://sound_effect/http://ha.local/stinger.mp3"
+        media_item = None
+
+    queues = type("Queues", (), {})()
+    queues.get_active_queue = AsyncMock(return_value=Queue())
+    queues.play_media = AsyncMock(side_effect=[None, RuntimeError("second insert failed")])
+    queues.get_queue_items = AsyncMock(side_effect=[[], [Item()], [Item()]])
+    queues.delete_item = AsyncMock()
+    client = type("Client", (), {"player_queues": queues})()
+
+    with pytest.raises(RuntimeError, match="second insert failed"):
+        await MusicAssistantQueueAdapter(client, "player-1").async_insert_sequence(
+            [
+                QueueMedia("http://ha.local/jingle.mp3", "AI DJ Jingle", duration=2),
+                QueueMedia("http://ha.local/stinger.mp3", "AI DJ Stinger", duration=3),
+            ]
+        )
+
+    queues.delete_item.assert_awaited_once_with("queue-1", "stinger-id")
 
 
 @pytest.mark.asyncio

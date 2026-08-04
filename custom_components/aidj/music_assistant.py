@@ -123,48 +123,61 @@ class MusicAssistantQueueAdapter:
         queue = await self.client.player_queues.get_active_queue(self.player_id)
         if queue is None:
             raise RuntimeError(f"No active Music Assistant queue for {self.player_id}")
-        existing_items = await self.client.player_queues.get_queue_items(queue.queue_id)
-        existing_ids = {
-            item_id
-            for item in existing_items
-            if isinstance((item_id := getattr(item, "queue_item_id", None)), str)
-        }
-        await self.client.player_queues.play_media(
-            queue_id=queue.queue_id,
-            media=tracks,
-            option=QueueOption.NEXT,
-        )
-
-        items = await self.client.player_queues.get_queue_items(queue.queue_id)
-        queue_ids: list[str] = []
-        used_queue_item_ids: set[str] = set()
-        for track in tracks:
-            matching = next(
-                (
-                    item
-                    for item in items
-                    if (queue_item_id := getattr(item, "queue_item_id", None))
-                    and queue_item_id not in existing_ids
-                    and queue_item_id not in used_queue_item_ids
-                    and (
-                        getattr(item, "uri", None) == track.uri
-                        or (
-                            getattr(item, "media_item", None) is not None
-                            and getattr(item.media_item, "item_id", None) == track.item_id
-                        )
-                        or getattr(item, "name", "") == track.name
-                    )
-                ),
-                None,
-            )
-            if matching is None:
-                raise RuntimeError(
-                    f"Music Assistant did not expose inserted AI DJ queue item {track.name}"
+        inserted_ids: list[str] = []
+        try:
+            # Repeated NEXT operations stack newest-first. Insert in reverse so each
+            # SoundEffect is independently chained in the requested playback order.
+            for track in reversed(tracks):
+                existing_items = await self.client.player_queues.get_queue_items(
+                    queue.queue_id
                 )
-            queue_item_id = matching.queue_item_id
-            used_queue_item_ids.add(queue_item_id)
-            queue_ids.append(queue_item_id)
-        return queue_ids
+                existing_ids = {
+                    item_id
+                    for item in existing_items
+                    if isinstance(
+                        (item_id := getattr(item, "queue_item_id", None)), str
+                    )
+                }
+                await self.client.player_queues.play_media(
+                    queue_id=queue.queue_id,
+                    media=[track],
+                    option=QueueOption.NEXT,
+                )
+                items = await self.client.player_queues.get_queue_items(queue.queue_id)
+                matching = next(
+                    (
+                        item
+                        for item in items
+                        if (queue_item_id := getattr(item, "queue_item_id", None))
+                        and queue_item_id not in existing_ids
+                        and (
+                            getattr(item, "uri", None) == track.uri
+                            or (
+                                getattr(item, "media_item", None) is not None
+                                and getattr(item.media_item, "item_id", None)
+                                == track.item_id
+                            )
+                            or getattr(item, "name", "") == track.name
+                        )
+                    ),
+                    None,
+                )
+                if matching is None:
+                    raise RuntimeError(
+                        "Music Assistant did not expose inserted AI DJ queue item "
+                        f"{track.name}"
+                    )
+                inserted_ids.append(matching.queue_item_id)
+        except Exception:
+            for queue_item_id in inserted_ids:
+                try:
+                    await self.client.player_queues.delete_item(
+                        queue.queue_id, queue_item_id
+                    )
+                except Exception:
+                    pass
+            raise
+        return list(reversed(inserted_ids))
 
     async def async_insert_next(self, media_uri: str) -> str:
         """Insert a rendered announcement as the next queue item."""
