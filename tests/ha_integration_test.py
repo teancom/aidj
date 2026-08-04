@@ -723,6 +723,44 @@ async def test_queue_provider_collects_native_three_track_window(hass: HomeAssis
     assert [track.track for track in context.next] == ["Track 4", "Track 5", "Track 6"]
 
 
+def test_native_queue_context_uses_player_buffer_boundary() -> None:
+    """A player-buffered next track becomes the completed side of an inserted break."""
+    from custom_components.aidj.queue_snapshot import parse_native_queue_snapshot
+
+    def item(index: int):
+        return type(
+            "Item",
+            (),
+            {
+                "index": index,
+                "queue_item_id": f"item-{index}",
+                "to_dict": lambda self: {
+                    "queue_item_id": self.queue_item_id,
+                    "media_item": {
+                        "uri": f"library://track/{index}",
+                        "name": f"Track {index}",
+                        "artists": [{"name": f"Artist {index}"}],
+                    },
+                },
+            },
+        )()
+
+    queue = type(
+        "Queue",
+        (),
+        {"queue_id": "queue-1", "current_index": 3, "index_in_buffer": 4},
+    )()
+    parsed = parse_native_queue_snapshot(queue, [item(index) for index in range(1, 8)])
+
+    assert parsed is not None
+    snapshot, context = parsed
+    assert snapshot.current_index == 3
+    assert snapshot.index_in_buffer == 4
+    assert context.current == TrackContext("Track 4", artist="Artist 4")
+    assert [track.track for track in context.previous] == ["Track 1", "Track 2", "Track 3"]
+    assert [track.track for track in context.next] == ["Track 5", "Track 6", "Track 7"]
+
+
 def test_music_context_accepts_nested_music_assistant_model_objects() -> None:
     """Native queue models need not eagerly serialize nested media objects."""
     from custom_components.aidj.music_context import track_context

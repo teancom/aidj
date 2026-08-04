@@ -450,7 +450,12 @@ class QueueProvider:
         current_index = getattr(queue, "current_index", None)
         if not isinstance(current_index, int):
             return None
-        offset = max(current_index - 3, 0)
+        index_in_buffer = getattr(queue, "index_in_buffer", None)
+        effective_index = max(
+            current_index,
+            index_in_buffer if isinstance(index_in_buffer, int) else current_index,
+        )
+        offset = max(effective_index - 3, 0)
         queue_items = await self.music_assistant_client.player_queues.get_queue_items(
             queue.queue_id,
             limit=7,

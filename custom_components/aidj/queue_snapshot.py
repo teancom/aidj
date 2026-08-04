@@ -26,10 +26,11 @@ class QueueItemIdentity:
 
 @dataclass(frozen=True, slots=True)
 class QueueSnapshot:
-    """Comparable boundary representation of the active queue."""
+    """Comparable playback and player-buffer boundary representation."""
 
     queue_id: str
     current_index: int
+    index_in_buffer: int | None
     current_item: QueueItemIdentity | None
     next_item: QueueItemIdentity | None
 
@@ -61,11 +62,16 @@ def parse_ha_queue_snapshot(queue: Mapping[str, Any] | Any) -> QueueSnapshot | N
     current_index = queue.get("current_index")
     if not isinstance(queue_id, str) or not queue_id.strip() or not isinstance(current_index, int):
         return None
+    index_in_buffer = queue.get("index_in_buffer")
+    if not isinstance(index_in_buffer, int):
+        index_in_buffer = None
     current_item = queue_item_identity(queue.get("current_item"))
     next_item = queue_item_identity(queue.get("next_item"))
     if current_item is None or next_item is None:
         return None
-    return QueueSnapshot(queue_id.strip(), current_index, current_item, next_item)
+    return QueueSnapshot(
+        queue_id.strip(), current_index, index_in_buffer, current_item, next_item
+    )
 
 
 def parse_native_queue_snapshot(queue: Any, items: Sequence[Any]) -> tuple[QueueSnapshot, QueueContext] | None:
@@ -74,7 +80,11 @@ def parse_native_queue_snapshot(queue: Any, items: Sequence[Any]) -> tuple[Queue
     current_index = getattr(queue, "current_index", None)
     if not isinstance(queue_id, str) or not queue_id.strip() or not isinstance(current_index, int):
         return None
-    context = native_queue_context(items, current_index)
+    index_in_buffer = getattr(queue, "index_in_buffer", None)
+    if not isinstance(index_in_buffer, int):
+        index_in_buffer = current_index
+    effective_index = max(current_index, index_in_buffer)
+    context = native_queue_context(items, effective_index)
     current = next((item for item in items if getattr(item, "index", None) == current_index), None)
     upcoming = next(
         (item for item in items if isinstance(getattr(item, "index", None), int) and item.index > current_index),
@@ -84,7 +94,16 @@ def parse_native_queue_snapshot(queue: Any, items: Sequence[Any]) -> tuple[Queue
     next_identity = queue_item_identity(upcoming)
     if context.current is None or not context.next or current_identity is None or next_identity is None:
         return None
-    return QueueSnapshot(queue_id.strip(), current_index, current_identity, next_identity), context
+    return (
+        QueueSnapshot(
+            queue_id.strip(),
+            current_index,
+            index_in_buffer,
+            current_identity,
+            next_identity,
+        ),
+        context,
+    )
 
 
 def snapshot_mismatches(ha: QueueSnapshot, native: QueueSnapshot) -> dict[str, tuple[Any, Any]]:
@@ -92,6 +111,11 @@ def snapshot_mismatches(ha: QueueSnapshot, native: QueueSnapshot) -> dict[str, t
     values = {
         "queue_id": (ha.queue_id, native.queue_id),
         "current_index": (ha.current_index, native.current_index),
+        **(
+            {"index_in_buffer": (ha.index_in_buffer, native.index_in_buffer)}
+            if ha.index_in_buffer is not None
+            else {}
+        ),
         "current_item": (ha.current_item, native.current_item),
         "next_item": (ha.next_item, native.next_item),
     }
