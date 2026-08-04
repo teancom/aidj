@@ -6,7 +6,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import logging
-from random import randint
+from random import choice, randint
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -19,7 +19,12 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
 
 from .ha_music_assistant import HaMusicAssistantQueue
-from .music_assistant import HaTtsUrlRenderer, MusicAssistantClient, MusicAssistantQueueAdapter
+from .music_assistant import (
+    HaTtsUrlRenderer,
+    MusicAssistantClient,
+    MusicAssistantQueueAdapter,
+    QueueMedia,
+)
 
 from .announcement import AnnouncementController, track_identity
 from .briefing_generation import BriefingGenerationService, GeneratedBriefing
@@ -348,7 +353,19 @@ class AiDjRuntime:
         attributes = getattr(state, "attributes", {})
         title = str(attributes.get("media_title", ""))
         content_id = str(attributes.get("media_content_id", ""))
-        return title == "AI DJ Announcement" or "AI DJ Announcement" in content_id
+        return title.startswith("AI DJ ") or "AI DJ " in content_id
+
+    def _record_owned_sequence(
+        self, queue_item_ids: str | list[str], metadata: dict[str, str]
+    ) -> None:
+        """Record every queue item inserted for one announcement break."""
+        item_ids = [queue_item_ids] if isinstance(queue_item_ids, str) else queue_item_ids
+        created_at = dt_util.now()
+        for position, item_id in enumerate(item_ids):
+            self._owned_queue_items[item_id] = {
+                **metadata,
+                "created_at": (created_at + timedelta(microseconds=position)).isoformat(),
+            }
 
     async def _async_prepare_boundary(self, target: datetime) -> None:
         """Serialize generation and queueing of one clock briefing."""
@@ -385,18 +402,11 @@ class AiDjRuntime:
                 or not self._is_player_playing()
             ):
                 return
-            queue_item_id = await self.async_queue_announcement_next(briefing.text)
+            queue_item_ids = await self.async_queue_announcement_next(briefing.text)
+            self._record_owned_sequence(queue_item_ids, {"boundary": boundary})
             if operation_generation != self._operation_generation:
-                self._owned_queue_items[queue_item_id] = {
-                    "boundary": boundary,
-                    "created_at": dt_util.now().isoformat(),
-                }
                 await self._async_remove_owned_items()
                 return
-            self._owned_queue_items[queue_item_id] = {
-                "boundary": boundary,
-                "created_at": dt_util.now().isoformat(),
-            }
             self._record_story(briefing.selected_story_id)
             self._reset_cadence()
             await self._async_save_controller_state()
@@ -482,18 +492,11 @@ class AiDjRuntime:
                 or not self._is_player_playing()
             ):
                 return
-            queue_item_id = await self.async_queue_announcement_next(briefing.text)
+            queue_item_ids = await self.async_queue_announcement_next(briefing.text)
+            self._record_owned_sequence(queue_item_ids, {"cadence": "true"})
             if operation_generation != self._operation_generation:
-                self._owned_queue_items[queue_item_id] = {
-                    "cadence": "true",
-                    "created_at": dt_util.now().isoformat(),
-                }
                 await self._async_remove_owned_items()
                 return
-            self._owned_queue_items[queue_item_id] = {
-                "cadence": "true",
-                "created_at": dt_util.now().isoformat(),
-            }
             self._record_story(briefing.selected_story_id)
             self._reset_cadence()
             await self._async_save_controller_state()
@@ -515,6 +518,7 @@ class AiDjRuntime:
         """Forget the oldest owned item once its audio has begun playing."""
         if not self._owned_queue_items:
             return
+
         item_id = min(
             self._owned_queue_items,
             key=lambda key: self._owned_queue_items[key].get("created_at", ""),
@@ -559,14 +563,21 @@ class AiDjRuntime:
         if changed:
             await self._async_save_controller_state()
 
-    async def async_queue_announcement_next(self, message: str) -> str:
-        """Render a briefing and insert it as the next MA queue item."""
+    async def async_queue_announcement_next(self, message: str) -> list[str]:
+        """Render and atomically insert one imaged announcement sequence."""
         if self._ma_queue is None or self._ma_tts is None:
             raise ServiceValidationError(
                 "Music Assistant native transport is not configured for this station"
             )
-        media_uri = await self._ma_tts.async_render(message)
-        return await self._ma_queue.async_insert_next(media_uri)
+        settings = self.settings
+        announcement_uri = await self._ma_tts.async_render(message)
+        media: list[QueueMedia] = []
+        if settings.jingle_urls:
+            media.append(QueueMedia(choice(settings.jingle_urls), "AI DJ Jingle"))
+        media.append(QueueMedia(announcement_uri, "AI DJ Announcement"))
+        if settings.stinger_urls:
+            media.append(QueueMedia(choice(settings.stinger_urls), "AI DJ Stinger"))
+        return await self._ma_queue.async_insert_sequence(media)
 
     @property
     def name(self) -> str:
@@ -620,7 +631,8 @@ class AiDjRuntime:
         """Generate a briefing and arm it for the next track boundary."""
         briefing = await self._async_generate_briefing(weather_entity_id, agent_id, prompt)
         if self.music_assistant_enabled:
-            await self.async_queue_announcement_next(briefing.text)
+            queue_item_ids = await self.async_queue_announcement_next(briefing.text)
+            self._record_owned_sequence(queue_item_ids, {"manual": "true"})
             self._record_story(briefing.selected_story_id)
             await self._async_save_controller_state()
             return

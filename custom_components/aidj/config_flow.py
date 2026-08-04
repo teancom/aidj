@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from typing import Any
+from urllib.parse import urlparse
 
 import voluptuous as vol
 from homeassistant import config_entries
@@ -31,6 +32,8 @@ from .const import (
     CONF_WEATHER,
     CONF_PERSONALITY,
     CONF_CUSTOM_PERSONALITY,
+    CONF_JINGLE_URLS,
+    CONF_STINGER_URLS,
     CONF_CADENCE_ENABLED,
     CONF_CADENCE_MIN_TRACKS,
     CONF_CADENCE_MAX_TRACKS,
@@ -58,6 +61,19 @@ def _options_errors(values: dict[str, Any]) -> dict[str, str]:
         and not str(values.get(CONF_CUSTOM_PERSONALITY, "")).strip()
     ):
         errors[CONF_CUSTOM_PERSONALITY] = "custom_personality_required"
+    for key in (CONF_JINGLE_URLS, CONF_STINGER_URLS):
+        raw_urls = values.get(key, "")
+        lines = raw_urls.splitlines() if isinstance(raw_urls, str) else raw_urls
+        if not isinstance(lines, (list, tuple)):
+            errors[key] = "audio_url_invalid"
+            continue
+        for raw_url in lines:
+            if not isinstance(raw_url, str) or not raw_url.strip():
+                continue
+            parsed = urlparse(raw_url.strip())
+            if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                errors[key] = "audio_url_invalid"
+                break
     try:
         cadence_min = int(
             values.get(CONF_CADENCE_MIN_TRACKS, DEFAULT_CADENCE_MIN_TRACKS)
@@ -387,6 +403,22 @@ class AiDjOptionsFlow(config_entries.OptionsFlow):
                     CONF_CUSTOM_PERSONALITY,
                     description={
                         "suggested_value": current.get(CONF_CUSTOM_PERSONALITY, "")
+                    },
+                ): selector.TextSelector(
+                    {"multiline": True, "type": selector.TextSelectorType.TEXT}
+                ),
+                vol.Optional(
+                    CONF_JINGLE_URLS,
+                    description={
+                        "suggested_value": "\n".join(normalized.jingle_urls)
+                    },
+                ): selector.TextSelector(
+                    {"multiline": True, "type": selector.TextSelectorType.TEXT}
+                ),
+                vol.Optional(
+                    CONF_STINGER_URLS,
+                    description={
+                        "suggested_value": "\n".join(normalized.stinger_urls)
                     },
                 ): selector.TextSelector(
                     {"multiline": True, "type": selector.TextSelectorType.TEXT}

@@ -20,7 +20,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components import aidj
 from custom_components.aidj.ha_music_assistant import HaMusicAssistantQueue
 from custom_components.aidj.config_flow import _options_errors
-from custom_components.aidj.music_assistant import MusicAssistantQueueAdapter
+from custom_components.aidj.music_assistant import MusicAssistantQueueAdapter, QueueMedia
 from custom_components.aidj.music_context import QueueContext, TrackContext
 from custom_components.aidj.briefing_assembly import BriefingCollection, build_briefing_providers
 from custom_components.aidj.briefing_generation import BriefingGenerationService, GeneratedBriefing
@@ -58,6 +58,8 @@ from custom_components.aidj.const import (
     CONF_WEATHER,
     CONF_PERSONALITY,
     CONF_CUSTOM_PERSONALITY,
+    CONF_JINGLE_URLS,
+    CONF_STINGER_URLS,
     CONF_CADENCE_ENABLED,
     CONF_CADENCE_MIN_TRACKS,
     CONF_CADENCE_MAX_TRACKS,
@@ -110,6 +112,22 @@ def test_station_settings_normalizes_effective_config() -> None:
     assert (settings.cadence_min_tracks, settings.cadence_max_tracks) == (2, 6)
     assert settings.cadence_content == CADENCE_CONTENT_FULL
     assert settings.music_assistant_enabled is True
+
+
+def test_station_settings_normalizes_url_pools() -> None:
+    """URL pools are clearable multiline values with one trimmed URL per line."""
+    settings = StationSettings.from_mapping(
+        {
+            CONF_JINGLE_URLS: "  /local/intro.mp3  \n\n/local/second.mp3\n  ",
+            CONF_STINGER_URLS: [" /local/outro.mp3 ", "", " /local/final.mp3 "],
+        }
+    )
+
+    assert settings.jingle_urls == ("/local/intro.mp3", "/local/second.mp3")
+    assert settings.stinger_urls == ("/local/outro.mp3", "/local/final.mp3")
+    assert StationSettings.from_mapping(
+        {CONF_JINGLE_URLS: " \n ", CONF_STINGER_URLS: ""}
+    ).jingle_urls == ()
 
 
 def test_station_settings_normalizes_personality() -> None:
@@ -176,7 +194,7 @@ async def test_music_assistant_queue_adapter_inserts_next_without_replacing() ->
     queues = type("Queues", (), {})()
     queues.get_active_queue = AsyncMock(return_value=Queue())
     queues.play_media = AsyncMock()
-    queues.get_queue_items = AsyncMock(return_value=[Item()])
+    queues.get_queue_items = AsyncMock(side_effect=[[], [Item()]])
     client = type("Client", (), {"player_queues": queues})()
 
     item_id = await MusicAssistantQueueAdapter(client, "player-1").async_insert_next(
@@ -193,7 +211,65 @@ async def test_music_assistant_queue_adapter_inserts_next_without_replacing() ->
     assert track.item_id == "http://ha.local/tts/clip.mp3"
     assert track.uri == "builtin://sound_effect/http://ha.local/tts/clip.mp3"
     assert track.media_type is MediaType.SOUND_EFFECT
+    assert track.duration == 0
     assert track.provider_mappings.pop().audio_format.content_type is ContentType.MP3
+
+
+@pytest.mark.asyncio
+async def test_music_assistant_queue_adapter_inserts_ordered_sequence() -> None:
+    """Native MA transport inserts all effects in one ordered queue operation."""
+    class QueueItem:
+        def __init__(self, queue_item_id: str, name: str, uri: str) -> None:
+            self.queue_item_id = queue_item_id
+            self.name = name
+            self.uri = uri
+            self.media_item = None
+
+    class Queue:
+        queue_id = "queue-1"
+
+    queues = type("Queues", (), {})()
+    queues.get_active_queue = AsyncMock(return_value=Queue())
+    queues.play_media = AsyncMock()
+    inserted_items = [
+        QueueItem(
+            "stinger-id",
+            "AI DJ Stinger",
+            "builtin://sound_effect/http://ha.local/stinger.mp3",
+        ),
+        QueueItem(
+            "jingle-id",
+            "AI DJ Jingle",
+            "builtin://sound_effect/http://ha.local/jingle.mp3",
+        ),
+    ]
+    queues.get_queue_items = AsyncMock(side_effect=[[], inserted_items])
+    client = type("Client", (), {"player_queues": queues})()
+
+    queue_ids = await MusicAssistantQueueAdapter(client, "player-1").async_insert_sequence(
+        [
+            QueueMedia(
+                "http://ha.local/jingle.mp3",
+                "AI DJ Jingle",
+                duration=2,
+                content_type=ContentType.MP3,
+            ),
+            QueueMedia(
+                "http://ha.local/stinger.mp3",
+                "AI DJ Stinger",
+                duration=3,
+                content_type=ContentType.MP3,
+            ),
+        ]
+    )
+
+    assert queue_ids == ["jingle-id", "stinger-id"]
+    queues.play_media.assert_awaited_once()
+    call = queues.play_media.await_args.kwargs
+    assert call["option"] is QueueOption.NEXT
+    assert [track.name for track in call["media"]] == ["AI DJ Jingle", "AI DJ Stinger"]
+    assert [track.duration for track in call["media"]] == [2, 3]
+    assert all(track.media_type is MediaType.SOUND_EFFECT for track in call["media"])
 
 
 @pytest.mark.asyncio
@@ -1197,6 +1273,8 @@ async def test_options_flow_exposes_briefing_source_fields(
             CONF_AQI_THRESHOLD: "nan",
             CONF_PERSONALITY: "calm_intimate",
             CONF_CUSTOM_PERSONALITY: "Can this be deleted?",
+            CONF_JINGLE_URLS: " /local/intro.mp3 \n\n/local/second.mp3 ",
+            CONF_STINGER_URLS: " /local/outro.mp3 ",
         },
     )
     entry.add_to_hass(hass)
@@ -1233,6 +1311,19 @@ async def test_options_flow_exposes_briefing_source_fields(
     )
     assert custom_marker.default is vol.UNDEFINED
     assert custom_marker.description["suggested_value"] == "Can this be deleted?"
+    for field in (CONF_JINGLE_URLS, CONF_STINGER_URLS):
+        assert field in result["data_schema"].schema
+        assert result["data_schema"].schema[field].config["multiline"] is True
+        marker = next(item for item in result["data_schema"].schema if item.schema == field)
+        assert marker.default is vol.UNDEFINED
+    jingle_marker = next(
+        marker for marker in result["data_schema"].schema if marker.schema == CONF_JINGLE_URLS
+    )
+    stinger_marker = next(
+        marker for marker in result["data_schema"].schema if marker.schema == CONF_STINGER_URLS
+    )
+    assert jingle_marker.description["suggested_value"] == "/local/intro.mp3\n/local/second.mp3"
+    assert stinger_marker.description["suggested_value"] == "/local/outro.mp3"
     assert CONF_CADENCE_ENABLED in result["data_schema"].schema
     assert CONF_CADENCE_MIN_TRACKS in result["data_schema"].schema
     assert CONF_CADENCE_MAX_TRACKS in result["data_schema"].schema
@@ -1271,6 +1362,15 @@ async def test_options_flow_exposes_briefing_source_fields(
     assert _options_errors(
         {CONF_CADENCE_MIN_TRACKS: None, CONF_CADENCE_MAX_TRACKS: "invalid"}
     ) == {CONF_CADENCE_MAX_TRACKS: "cadence_invalid_range"}
+    assert _options_errors(
+        {
+            CONF_JINGLE_URLS: "https://ha.local/local/intro.wav\nhttp://ha.local/local/other.flac",
+            CONF_STINGER_URLS: "https://ha.local/local/end.opus",
+        }
+    ) == {}
+    assert _options_errors({CONF_JINGLE_URLS: "/local/intro.wav"}) == {
+        CONF_JINGLE_URLS: "audio_url_invalid"
+    }
 
 
 @pytest.mark.asyncio
@@ -1785,6 +1885,103 @@ async def test_music_transition_generation_uses_verified_queue_without_weather(
 
 
 @pytest.mark.asyncio
+async def test_native_announcement_inserts_random_imaging_as_one_ordered_sequence(
+    hass: HomeAssistant,
+) -> None:
+    """Configured pools surround TTS in one native MA queue operation."""
+    from custom_components.aidj.runtime import AiDjRuntime
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Radio",
+            CONF_PLAYER: "media_player.radio",
+            CONF_TTS: "tts.voice",
+            CONF_MA_URL: "http://ma.local:8095",
+            CONF_MA_TOKEN: "ma-secret",
+            CONF_HA_TOKEN: "ha-secret",
+            CONF_MA_PLAYER: "player-1",
+        },
+        options={
+            CONF_JINGLE_URLS: "https://ha.local/local/aidj/a.wav\nhttps://ha.local/local/aidj/b.flac",
+            CONF_STINGER_URLS: "https://ha.local/local/aidj/end.opus",
+        },
+    )
+    runtime = AiDjRuntime(hass, entry)
+    runtime._ma_tts = type("Tts", (), {"async_render": AsyncMock(return_value="https://ha.local/tts.mp3")})()
+    insert = AsyncMock(return_value=["jingle-id", "tts-id", "stinger-id"])
+    runtime._ma_queue = type("Queue", (), {"async_insert_sequence": insert})()
+
+    with patch("custom_components.aidj.runtime.choice", side_effect=lambda values: values[-1]):
+        item_ids = await runtime.async_queue_announcement_next("Hello")
+
+    assert item_ids == ["jingle-id", "tts-id", "stinger-id"]
+    sequence = insert.await_args.args[0]
+    assert [(item.uri, item.name) for item in sequence] == [
+        ("https://ha.local/local/aidj/b.flac", "AI DJ Jingle"),
+        ("https://ha.local/tts.mp3", "AI DJ Announcement"),
+        ("https://ha.local/local/aidj/end.opus", "AI DJ Stinger"),
+    ]
+    assert [item.duration for item in sequence] == [0, 0, 0]
+    assert [item.content_type for item in sequence] == [None, None, None]
+    assert [ContentType.try_parse(item.uri) for item in sequence] == [
+        ContentType.FLAC,
+        ContentType.MP3,
+        ContentType.OPUS,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_native_announcement_without_imaging_inserts_only_tts(
+    hass: HomeAssistant,
+) -> None:
+    """Empty imaging pools preserve the existing TTS-only behavior."""
+    from custom_components.aidj.runtime import AiDjRuntime
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_NAME: "Radio", CONF_PLAYER: "media_player.radio", CONF_TTS: "tts.voice"},
+    )
+    runtime = AiDjRuntime(hass, entry)
+    runtime._ma_tts = type("Tts", (), {"async_render": AsyncMock(return_value="https://ha.local/tts.mp3")})()
+    insert = AsyncMock(return_value=["tts-id"])
+    runtime._ma_queue = type("Queue", (), {"async_insert_sequence": insert})()
+
+    assert await runtime.async_queue_announcement_next("Hello") == ["tts-id"]
+    sequence = insert.await_args.args[0]
+    assert [(item.uri, item.name) for item in sequence] == [
+        ("https://ha.local/tts.mp3", "AI DJ Announcement")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_imaging_sequence_retires_owned_items_in_playback_order(
+    hass: HomeAssistant,
+) -> None:
+    """Jingle, announcement, and stinger ownership retires FIFO."""
+    from custom_components.aidj.runtime import AiDjRuntime
+
+    runtime = AiDjRuntime(
+        hass,
+        MockConfigEntry(
+            domain=DOMAIN,
+            data={CONF_NAME: "Radio", CONF_PLAYER: "media_player.radio", CONF_TTS: "tts.voice"},
+        ),
+    )
+    runtime._store = type("Store", (), {"async_save": AsyncMock()})()
+    runtime._record_owned_sequence(
+        ["jingle-id", "tts-id", "stinger-id"], {"cadence": "true"}
+    )
+
+    await runtime._async_retire_playing_announcement()
+    assert list(runtime._owned_queue_items) == ["tts-id", "stinger-id"]
+    await runtime._async_retire_playing_announcement()
+    assert list(runtime._owned_queue_items) == ["stinger-id"]
+    await runtime._async_retire_playing_announcement()
+    assert runtime._owned_queue_items == {}
+
+
+@pytest.mark.asyncio
 async def test_native_briefing_rejects_missing_music_context(
     hass: HomeAssistant,
 ) -> None:
@@ -1989,7 +2186,9 @@ async def test_native_briefing_next_queues_prepared_tts_url_without_tts_speak(
     tts_speak = AsyncMock()
     hass.services.async_register("tts", "speak", tts_speak)
     generate = AsyncMock(return_value=GeneratedBriefing("Sunny and warm."))
-    queue_announcement = AsyncMock(return_value="queue-item")
+    queue_announcement = AsyncMock(
+        return_value=["jingle-item", "queue-item", "stinger-item"]
+    )
     announce_next = AsyncMock()
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(AiDjRuntime, "_async_generate_briefing", generate)
@@ -1998,6 +2197,15 @@ async def test_native_briefing_next_queues_prepared_tts_url_without_tts_speak(
         await runtime.async_briefing_next("weather.forecast_home", "conversation.agent")
 
     queue_announcement.assert_awaited_once_with("Sunny and warm.")
+    assert list(runtime._owned_queue_items) == [
+        "jingle-item",
+        "queue-item",
+        "stinger-item",
+    ]
+    assert all(
+        metadata.get("manual") == "true"
+        for metadata in runtime._owned_queue_items.values()
+    )
     announce_next.assert_not_awaited()
     tts_speak.assert_not_awaited()
 

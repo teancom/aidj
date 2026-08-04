@@ -49,7 +49,8 @@
     "error": {
       "custom_personality_required": "Enter custom personality instructions or choose a preset.",
       "cadence_max_below_min": "Maximum songs must be greater than or equal to minimum songs.",
-      "cadence_invalid_range": "Enter valid song counts between 1 and 20."
+      "cadence_invalid_range": "Enter valid song counts between 1 and 20.",
+      "audio_url_invalid": "Enter one complete http:// or https:// audio URL per line."
     },
     "step": {
       "init": {
@@ -67,10 +68,16 @@
           "aqi_relevance_threshold": "AQI relevance threshold",
           "personality": "DJ personality",
           "custom_personality": "Custom personality instructions (used only when Custom is selected)",
+          "jingle_urls": "Jingles before announcements",
+          "stinger_urls": "Stingers after announcements",
           "cadence_enabled": "DJ breaks between songs",
           "cadence_min_tracks": "Minimum songs between breaks",
           "cadence_max_tracks": "Maximum songs between breaks",
           "cadence_content": "Break content"
+        },
+        "data_description": {
+          "jingle_urls": "Optional direct audio URLs played before announcements. Put files in /config/www and use the matching /local URL, with one URL per line.",
+          "stinger_urls": "Optional direct audio URLs played after announcements. Put files in /config/www and use the matching /local URL, with one URL per line."
         }
       }
     }

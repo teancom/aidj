@@ -26,6 +26,8 @@ CONF_AQI: Final = "aqi_entity_id"
 CONF_AQI_THRESHOLD: Final = "aqi_relevance_threshold"
 CONF_PERSONALITY: Final = "personality"
 CONF_CUSTOM_PERSONALITY: Final = "custom_personality"
+CONF_JINGLE_URLS: Final = "jingle_urls"
+CONF_STINGER_URLS: Final = "stinger_urls"
 CONF_CADENCE_ENABLED: Final = "cadence_enabled"
 CONF_CADENCE_MIN_TRACKS: Final = "cadence_min_tracks"
 CONF_CADENCE_MAX_TRACKS: Final = "cadence_max_tracks"
@@ -109,6 +111,13 @@ def _string_list(value: Any) -> tuple[str, ...]:
     return tuple(item.strip() for item in value if isinstance(item, str) and item.strip())
 
 
+def _url_pool(value: Any) -> tuple[str, ...]:
+    """Normalize a multiline URL pool to one non-empty URL per line."""
+    if isinstance(value, str):
+        return tuple(line.strip() for line in value.splitlines() if line.strip())
+    return _string_list(value)
+
+
 @dataclass(frozen=True, slots=True)
 class StationSettings:
     """Typed, normalized settings for one configured AI DJ station."""
@@ -128,6 +137,8 @@ class StationSettings:
     aqi_relevance_threshold: float = 101.0
     personality: str = DEFAULT_PERSONALITY
     custom_personality: str = ""
+    jingle_urls: tuple[str, ...] = ()
+    stinger_urls: tuple[str, ...] = ()
     cadence_enabled: bool = False
     cadence_min_tracks: int = DEFAULT_CADENCE_MIN_TRACKS
     cadence_max_tracks: int = DEFAULT_CADENCE_MAX_TRACKS
@@ -179,6 +190,8 @@ class StationSettings:
             aqi_relevance_threshold=aqi_threshold,
             personality=personality,
             custom_personality=custom_personality,
+            jingle_urls=_url_pool(values.get(CONF_JINGLE_URLS)),
+            stinger_urls=_url_pool(values.get(CONF_STINGER_URLS)),
             cadence_enabled=values.get(CONF_CADENCE_ENABLED) is True,
             cadence_min_tracks=cadence_min,
             cadence_max_tracks=cadence_max,
