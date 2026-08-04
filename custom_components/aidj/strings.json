@@ -67,10 +67,10 @@
           "aqi_relevance_threshold": "AQI relevance threshold",
           "personality": "DJ personality",
           "custom_personality": "Custom personality instructions (used only when Custom is selected)",
-          "cadence_enabled": "Track-count DJ transitions",
-          "cadence_min_tracks": "Minimum songs between transitions",
-          "cadence_max_tracks": "Maximum songs between transitions",
-          "cadence_content": "Transition content"
+          "cadence_enabled": "DJ breaks between songs",
+          "cadence_min_tracks": "Minimum songs between breaks",
+          "cadence_max_tracks": "Maximum songs between breaks",
+          "cadence_content": "Break content"
         }
       }
     }
