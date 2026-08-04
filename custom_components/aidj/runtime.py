@@ -20,6 +20,7 @@ from homeassistant.helpers.storage import Store
 
 from .ha_music_assistant import HaMusicAssistantQueue
 from .music_assistant import (
+    AudioDurationProbe,
     HaTtsUrlRenderer,
     MusicAssistantClient,
     MusicAssistantQueueAdapter,
@@ -122,6 +123,7 @@ class AiDjRuntime:
     _ma_listener_task: Any = None
     _ma_queue: MusicAssistantQueueAdapter | None = None
     _ma_tts: HaTtsUrlRenderer | None = None
+    _audio_duration: AudioDurationProbe | None = None
 
     def __post_init__(self) -> None:
         """Create the boundary announcement controller after dataclass init."""
@@ -245,12 +247,14 @@ class AiDjRuntime:
                 client,
                 settings.music_assistant_player_id,
             )
+            session = async_get_clientsession(self.hass)
             self._ma_tts = HaTtsUrlRenderer(
-                async_get_clientsession(self.hass),
+                session,
                 self.hass.config.internal_url,
                 settings.home_assistant_token,
                 self.tts_entity_id,
             )
+            self._audio_duration = AudioDurationProbe(self.hass, session)
             listener: asyncio.Task[Any] | None = None
             ready_waiter: asyncio.Task[Any] | None = None
             try:
@@ -565,18 +569,25 @@ class AiDjRuntime:
 
     async def async_queue_announcement_next(self, message: str) -> list[str]:
         """Render and atomically insert one imaged announcement sequence."""
-        if self._ma_queue is None or self._ma_tts is None:
+        if self._ma_queue is None or self._ma_tts is None or self._audio_duration is None:
             raise ServiceValidationError(
                 "Music Assistant native transport is not configured for this station"
             )
         settings = self.settings
         announcement_uri = await self._ma_tts.async_render(message)
-        media: list[QueueMedia] = []
+        selected: list[tuple[str, str]] = []
         if settings.jingle_urls:
-            media.append(QueueMedia(choice(settings.jingle_urls), "AI DJ Jingle"))
-        media.append(QueueMedia(announcement_uri, "AI DJ Announcement"))
+            selected.append((choice(settings.jingle_urls), "AI DJ Jingle"))
+        selected.append((announcement_uri, "AI DJ Announcement"))
         if settings.stinger_urls:
-            media.append(QueueMedia(choice(settings.stinger_urls), "AI DJ Stinger"))
+            selected.append((choice(settings.stinger_urls), "AI DJ Stinger"))
+        durations = await asyncio.gather(
+            *(self._audio_duration.async_duration(uri) for uri, _ in selected)
+        )
+        media = [
+            QueueMedia(uri, name, duration=duration)
+            for (uri, name), duration in zip(selected, durations, strict=True)
+        ]
         return await self._ma_queue.async_insert_sequence(media)
 
     @property
@@ -678,6 +689,7 @@ class AiDjRuntime:
             self._ma_client = None
             self._ma_queue = None
             self._ma_tts = None
+            self._audio_duration = None
 
     async def async_get_queue(self) -> Any:
         """Read the active Music Assistant queue through Home Assistant."""

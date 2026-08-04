@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
+import wave
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -20,7 +22,11 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components import aidj
 from custom_components.aidj.ha_music_assistant import HaMusicAssistantQueue
 from custom_components.aidj.config_flow import _options_errors
-from custom_components.aidj.music_assistant import MusicAssistantQueueAdapter, QueueMedia
+from custom_components.aidj.music_assistant import (
+    AudioDurationProbe,
+    MusicAssistantQueueAdapter,
+    QueueMedia,
+)
 from custom_components.aidj.music_context import QueueContext, TrackContext
 from custom_components.aidj.briefing_assembly import BriefingCollection, build_briefing_providers
 from custom_components.aidj.briefing_generation import BriefingGenerationService, GeneratedBriefing
@@ -170,6 +176,18 @@ def test_station_settings_defaults_malformed_optional_values() -> None:
     assert settings.music_assistant_enabled is False
     assert StationSettings.from_mapping({CONF_AQI_THRESHOLD: "nan"}).aqi_relevance_threshold == 101.0
     assert StationSettings.from_mapping({CONF_AQI_THRESHOLD: "501"}).aqi_relevance_threshold == 101.0
+
+
+def test_audio_duration_probe_rounds_up_finite_audio() -> None:
+    """Duration probing reports enough whole seconds to avoid early truncation."""
+    payload = BytesIO()
+    with wave.open(payload, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(8000)
+        audio.writeframes(b"\0\0" * 10000)  # 1.25 seconds
+
+    assert AudioDurationProbe._duration_from_bytes(payload.getvalue()) == 2
 
 
 @pytest.mark.asyncio
@@ -1909,6 +1927,11 @@ async def test_native_announcement_inserts_random_imaging_as_one_ordered_sequenc
     )
     runtime = AiDjRuntime(hass, entry)
     runtime._ma_tts = type("Tts", (), {"async_render": AsyncMock(return_value="https://ha.local/tts.mp3")})()
+    runtime._audio_duration = type(
+        "DurationProbe",
+        (),
+        {"async_duration": AsyncMock(side_effect=[10, 24, 9])},
+    )()
     insert = AsyncMock(return_value=["jingle-id", "tts-id", "stinger-id"])
     runtime._ma_queue = type("Queue", (), {"async_insert_sequence": insert})()
 
@@ -1922,7 +1945,7 @@ async def test_native_announcement_inserts_random_imaging_as_one_ordered_sequenc
         ("https://ha.local/tts.mp3", "AI DJ Announcement"),
         ("https://ha.local/local/aidj/end.opus", "AI DJ Stinger"),
     ]
-    assert [item.duration for item in sequence] == [0, 0, 0]
+    assert [item.duration for item in sequence] == [10, 24, 9]
     assert [item.content_type for item in sequence] == [None, None, None]
     assert [ContentType.try_parse(item.uri) for item in sequence] == [
         ContentType.FLAC,
@@ -1944,6 +1967,9 @@ async def test_native_announcement_without_imaging_inserts_only_tts(
     )
     runtime = AiDjRuntime(hass, entry)
     runtime._ma_tts = type("Tts", (), {"async_render": AsyncMock(return_value="https://ha.local/tts.mp3")})()
+    runtime._audio_duration = type(
+        "DurationProbe", (), {"async_duration": AsyncMock(return_value=24)}
+    )()
     insert = AsyncMock(return_value=["tts-id"])
     runtime._ma_queue = type("Queue", (), {"async_insert_sequence": insert})()
 

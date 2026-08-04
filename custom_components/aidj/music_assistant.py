@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from io import BytesIO
+from math import ceil
 from typing import Sequence
 
 from aiohttp import ClientSession
+from homeassistant.core import HomeAssistant
+from mutagen import File as MutagenFile
 from music_assistant_client import MusicAssistantClient
 from music_assistant_models.enums import ContentType, QueueOption
 from music_assistant_models.media_items import AudioFormat, ProviderMapping
@@ -20,6 +24,35 @@ class QueueMedia:
     name: str
     duration: int = 0
     content_type: ContentType | None = None
+
+
+@dataclass(slots=True)
+class AudioDurationProbe:
+    """Resolve and cache whole-second durations for finite HTTP audio."""
+
+    hass: HomeAssistant
+    session: ClientSession
+    _cache: dict[str, int] = field(default_factory=dict)
+
+    async def async_duration(self, media_uri: str) -> int:
+        """Download one audio resource and return its rounded-up duration."""
+        media_uri = media_uri.strip()
+        if media_uri in self._cache:
+            return self._cache[media_uri]
+        async with self.session.get(media_uri) as response:
+            response.raise_for_status()
+            payload = await response.read()
+        duration = await self.hass.async_add_executor_job(self._duration_from_bytes, payload)
+        self._cache[media_uri] = duration
+        return duration
+
+    @staticmethod
+    def _duration_from_bytes(payload: bytes) -> int:
+        audio = MutagenFile(BytesIO(payload))
+        length = getattr(getattr(audio, "info", None), "length", 0)
+        if not isinstance(length, (int, float)) or length <= 0:
+            raise RuntimeError("Unable to determine audio duration")
+        return ceil(length)
 
 
 @dataclass(slots=True)
