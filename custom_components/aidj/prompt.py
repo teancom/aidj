@@ -68,14 +68,45 @@ def music_required_terms(items: Sequence[BriefingItem]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(terms))
 
 
+GROUNDING_PLACEHOLDERS = (
+    "[artist",
+    "[song",
+    "[insert ",
+    "song title",
+    "more great music",
+)
+
+
+def _normalize_grounding_text(value: str) -> str:
+    """Normalize harmless quote typography before exact title comparison."""
+    return (
+        value.casefold()
+        .replace("\u2018", "'")
+        .replace("\u2019", "'")
+        .replace("\u02bc", "'")
+        .replace("\u201c", '"')
+        .replace("\u201d", '"')
+    )
+
+
+def grounding_failures(
+    speech: str, required_terms: Sequence[str]
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return missing exact titles and placeholder markers in generated speech."""
+    normalized = _normalize_grounding_text(speech)
+    missing = tuple(
+        term for term in required_terms if _normalize_grounding_text(term) not in normalized
+    )
+    placeholders = tuple(
+        marker for marker in GROUNDING_PLACEHOLDERS if marker in normalized
+    )
+    return missing, placeholders
+
+
 def briefing_needs_grounding_retry(speech: str, required_terms: Sequence[str]) -> bool:
     """Reject placeholder or music-free output when exact track facts exist."""
-    lowered = speech.casefold()
-    placeholders = ("[artist", "[song", "[insert ", "song title", "more great music")
-    return bool(
-        any(marker in lowered for marker in placeholders)
-        or any(term.casefold() not in lowered for term in required_terms)
-    )
+    missing, placeholders = grounding_failures(speech, required_terms)
+    return bool(missing or placeholders)
 
 
 def build_briefing_prompt(

@@ -16,7 +16,12 @@ from .const import (
     PROVIDER_MUSIC_ASSISTANT_QUEUE,
     StationSettings,
 )
-from .prompt import briefing_needs_grounding_retry, build_briefing_prompt, music_required_terms
+from .prompt import (
+    briefing_needs_grounding_retry,
+    build_briefing_prompt,
+    grounding_failures,
+    music_required_terms,
+)
 from .story import select_feed_story
 
 _LOGGER = logging.getLogger(__name__)
@@ -145,6 +150,16 @@ class BriefingGenerationService:
         generated = await generator.async_generate(full_prompt)
         required_terms = music_required_terms(items)
         if required_terms and briefing_needs_grounding_retry(generated, required_terms):
+            missing, placeholders = grounding_failures(generated, required_terms)
+            _LOGGER.warning(
+                "AI DJ grounding retry for %s: required_titles=%r missing_titles=%r "
+                "placeholder_markers=%r generated=%r",
+                self.player_entity_id,
+                required_terms,
+                missing,
+                placeholders,
+                generated,
+            )
             retry_prompt = (
                 f"{full_prompt}\n\n"
                 "Revision required: the announcement must include the exact completed/current "
@@ -154,6 +169,16 @@ class BriefingGenerationService:
             )
             generated = await generator.async_generate(retry_prompt)
             if briefing_needs_grounding_retry(generated, required_terms):
+                missing, placeholders = grounding_failures(generated, required_terms)
+                _LOGGER.error(
+                    "AI DJ grounding rejection for %s after retry: required_titles=%r "
+                    "missing_titles=%r placeholder_markers=%r generated=%r",
+                    self.player_entity_id,
+                    required_terms,
+                    missing,
+                    placeholders,
+                    generated,
+                )
                 raise HomeAssistantError(
                     "Conversation agent returned an announcement that did not use the supplied "
                     "music facts"

@@ -1132,6 +1132,14 @@ def test_build_briefing_prompt_requires_specific_music_references() -> None:
     assert music_required_terms([item]) == ("Current Song", "Next Song")
     assert briefing_needs_grounding_retry("You heard Current Song; Next Song is coming up.", ("Current Song", "Next Song")) is False
     assert briefing_needs_grounding_retry("You heard [insert completed song title].", ("Current Song", "Next Song")) is True
+    assert briefing_needs_grounding_retry(
+        "That was Don’t Stop; Rock ’n’ Roll is next.",
+        ("Don't Stop", "Rock 'n' Roll"),
+    ) is False
+    assert briefing_needs_grounding_retry(
+        "That was Don't Stop; Rock 'n' Roll is next.",
+        ("Don’t Stop", "Rock ’n’ Roll"),
+    ) is False
 
 
 def test_build_briefing_prompt_layers_task_personality_and_facts() -> None:
@@ -1149,6 +1157,51 @@ def test_build_briefing_prompt_layers_task_personality_and_facts() -> None:
     assert "Use calm, flowing sentences." in prompt
     assert "write like a human local radio DJ" in prompt
     assert "Facts:\n- Weather: sunny" in prompt
+
+
+@pytest.mark.asyncio
+async def test_grounding_rejection_logs_required_terms_and_both_responses(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Rejected grounding attempts retain enough diagnostics to explain failure."""
+    from custom_components.aidj.runtime import AiDjRuntime
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+        },
+    )
+    runtime = AiDjRuntime(hass, entry)
+    service = BriefingGenerationService(
+        hass, runtime.settings, runtime.player_entity_id, object(), ()
+    )
+    item = BriefingItem(
+        provider="music_assistant_queue",
+        title="Music context",
+        summary="Verified",
+        music_context=QueueContext(
+            current=TrackContext("Don't Stop"),
+            next=(TrackContext("Next Song"),),
+        ),
+    )
+    generate = AsyncMock(side_effect=["A generic break.", "Still generic."])
+
+    with patch.object(HaConversationBriefingGenerator, "async_generate", generate), pytest.raises(
+        Exception, match="did not use the supplied music facts"
+    ):
+        await service._async_generate_grounded(
+            [item], "conversation.agent", "Write a transition."
+        )
+
+    assert "AI DJ grounding retry" in caplog.text
+    assert "AI DJ grounding rejection" in caplog.text
+    assert "Don't Stop" in caplog.text
+    assert "Next Song" in caplog.text
+    assert "A generic break." in caplog.text
+    assert "Still generic." in caplog.text
 
 
 @pytest.mark.asyncio
