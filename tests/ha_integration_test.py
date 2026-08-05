@@ -2313,6 +2313,45 @@ async def test_native_briefing_next_queues_prepared_tts_url_without_tts_speak(
 
 
 @pytest.mark.asyncio
+async def test_manual_briefing_next_skips_when_break_is_already_queued(
+    hass: HomeAssistant,
+) -> None:
+    """Manual briefing_next must not stack behind an existing scheduled break."""
+    from custom_components.aidj.runtime import AiDjRuntime
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+            "music_assistant_url": "http://ma.local:8095",
+            "music_assistant_token": "ma-secret",
+            "home_assistant_token": "ha-secret",
+            "music_assistant_player": "wiim-player",
+        },
+    )
+    runtime = AiDjRuntime(hass, entry)
+    runtime._owned_queue_items = {
+        "scheduled-jingle": {"boundary": "2026-08-04T15:30:00Z"},
+        "scheduled-tts": {"boundary": "2026-08-04T15:30:00Z"},
+    }
+    generate = AsyncMock()
+    queue = AsyncMock()
+
+    with patch.object(AiDjRuntime, "_async_generate_briefing", generate), patch.object(
+        AiDjRuntime, "async_queue_announcement_next", queue
+    ):
+        await runtime.async_briefing_next(
+            "weather.forecast_home", "conversation.agent"
+        )
+
+    generate.assert_not_awaited()
+    queue.assert_not_awaited()
+    assert set(runtime._owned_queue_items) == {"scheduled-jingle", "scheduled-tts"}
+
+
+@pytest.mark.asyncio
 async def test_incomplete_native_settings_keep_boundary_tts_fallback(
     hass: HomeAssistant,
 ) -> None:
@@ -2591,6 +2630,47 @@ def test_story_rotation_prefers_unseen_then_bounds_fifo() -> None:
         provider="feedreader", title="Default provider", summary="", identity="default"
     )
     assert select_feed_story([default_provider_story], []) == default_provider_story
+
+
+@pytest.mark.asyncio
+async def test_scheduled_boundary_skips_when_manual_break_is_already_queued(
+    hass: HomeAssistant,
+) -> None:
+    """A clock briefing must not stack behind an existing manual break."""
+    from datetime import datetime, timezone
+    from custom_components.aidj.runtime import AiDjRuntime
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+            CONF_MA_URL: "http://ma.local:8095",
+            CONF_MA_TOKEN: "ma-secret",
+            CONF_HA_TOKEN: "ha-secret",
+            CONF_MA_PLAYER: "wiim-player",
+        },
+    )
+    runtime = AiDjRuntime(hass, entry)
+    runtime._enabled = True
+    runtime._owned_queue_items = {
+        "manual-jingle": {"manual": "true"},
+        "manual-tts": {"manual": "true"},
+    }
+    generate = AsyncMock()
+    queue = AsyncMock()
+
+    with patch.object(AiDjRuntime, "_async_generate_briefing", generate), patch.object(
+        AiDjRuntime, "async_queue_announcement_next", queue
+    ):
+        await runtime._async_prepare_boundary(
+            datetime(2026, 8, 4, 15, 30, tzinfo=timezone.utc)
+        )
+
+    generate.assert_not_awaited()
+    queue.assert_not_awaited()
+    assert set(runtime._owned_queue_items) == {"manual-jingle", "manual-tts"}
 
 
 @pytest.mark.asyncio

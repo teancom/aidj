@@ -331,11 +331,9 @@ class AiDjRuntime:
             target += timedelta(hours=1)
         await self._async_prepare_boundary(target)
 
-    def _has_prepared_boundary(self, boundary: str) -> bool:
-        """Return whether this station already owns a break for the boundary."""
-        return boundary in {
-            metadata.get("boundary") for metadata in self._owned_queue_items.values()
-        }
+    def _has_queued_break(self) -> bool:
+        """Return whether this station already owns any upcoming break audio."""
+        return bool(self._owned_queue_items)
 
     def _is_player_playing(self) -> bool:
         """Return whether the configured HA player is actively playing."""
@@ -390,7 +388,7 @@ class AiDjRuntime:
                 self.name,
             )
             return
-        if self._has_prepared_boundary(boundary) or self._preparing_boundary == boundary:
+        if self._has_queued_break() or self._preparing_boundary == boundary:
             return
         if not self._is_player_playing():
             return
@@ -658,17 +656,24 @@ class AiDjRuntime:
         agent_id: str,
         prompt: str | None = None,
     ) -> None:
-        """Generate a briefing and arm it for the next track boundary."""
-        briefing = await self._async_generate_briefing(weather_entity_id, agent_id, prompt)
-        if self.music_assistant_enabled:
-            queue_item_ids = await self.async_queue_announcement_next(briefing.text)
-            self._record_owned_sequence(queue_item_ids, {"manual": "true"})
+        """Generate a briefing unless a break is already queued for the next boundary."""
+        async with self._preparation_lock:
+            if self._has_queued_break():
+                return
+            briefing = await self._async_generate_briefing(
+                weather_entity_id, agent_id, prompt
+            )
+            if self._has_queued_break():
+                return
+            if self.music_assistant_enabled:
+                queue_item_ids = await self.async_queue_announcement_next(briefing.text)
+                self._record_owned_sequence(queue_item_ids, {"manual": "true"})
+                self._record_story(briefing.selected_story_id)
+                await self._async_save_controller_state()
+                return
+            await self.async_announce_next(briefing.text)
             self._record_story(briefing.selected_story_id)
             await self._async_save_controller_state()
-            return
-        await self.async_announce_next(briefing.text)
-        self._record_story(briefing.selected_story_id)
-        await self._async_save_controller_state()
 
     async def async_announce_next(self, message: str) -> None:
         """Speak a message when the configured player advances to another track."""
