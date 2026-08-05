@@ -30,11 +30,7 @@ from custom_components.aidj.music_assistant import (
 from custom_components.aidj.music_context import QueueContext, TrackContext
 from custom_components.aidj.briefing_assembly import BriefingCollection, build_briefing_providers
 from custom_components.aidj.briefing_generation import BriefingGenerationService, GeneratedBriefing
-from custom_components.aidj.prompt import (
-    briefing_needs_grounding_retry,
-    build_briefing_prompt,
-    music_required_terms,
-)
+from custom_components.aidj.prompt import build_briefing_prompt
 from custom_components.aidj.story import record_story, select_feed_story
 from custom_components.aidj.briefing import (
     AqiEntityProvider,
@@ -1129,17 +1125,8 @@ def test_build_briefing_prompt_requires_specific_music_references() -> None:
     assert "coming-up-next reference" in prompt
     assert "Completed/current track: Current Song" in prompt
     assert "Upcoming track: Next Song" in prompt
-    assert music_required_terms([item]) == ("Current Song", "Next Song")
-    assert briefing_needs_grounding_retry("You heard Current Song; Next Song is coming up.", ("Current Song", "Next Song")) is False
-    assert briefing_needs_grounding_retry("You heard [insert completed song title].", ("Current Song", "Next Song")) is True
-    assert briefing_needs_grounding_retry(
-        "That was Don’t Stop; Rock ’n’ Roll is next.",
-        ("Don't Stop", "Rock 'n' Roll"),
-    ) is False
-    assert briefing_needs_grounding_retry(
-        "That was Don't Stop; Rock 'n' Roll is next.",
-        ("Don’t Stop", "Rock ’n’ Roll"),
-    ) is False
+    assert "never invent, complete, or substitute metadata" in prompt
+    assert "refer to the artist without saying the title" in prompt
 
 
 def test_build_briefing_prompt_layers_task_personality_and_facts() -> None:
@@ -1160,10 +1147,10 @@ def test_build_briefing_prompt_layers_task_personality_and_facts() -> None:
 
 
 @pytest.mark.asyncio
-async def test_grounding_rejection_logs_required_terms_and_both_responses(
-    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+async def test_symbol_title_allows_artist_only_output_without_retry(
+    hass: HomeAssistant,
 ) -> None:
-    """Rejected grounding attempts retain enough diagnostics to explain failure."""
+    """The model may sensibly introduce an unspeakable title by artist alone."""
     from custom_components.aidj.runtime import AiDjRuntime
 
     entry = MockConfigEntry(
@@ -1183,58 +1170,12 @@ async def test_grounding_rejection_logs_required_terms_and_both_responses(
         title="Music context",
         summary="Verified",
         music_context=QueueContext(
-            current=TrackContext("Don't Stop"),
-            next=(TrackContext("Next Song"),),
+            current=TrackContext("Violet (Hole cover)", artist="Filth is Eternal"),
+            next=(TrackContext("-->", artist="Andrew Bird"),),
         ),
     )
-    generate = AsyncMock(side_effect=["A generic break.", "Still generic."])
-
-    with patch.object(HaConversationBriefingGenerator, "async_generate", generate), pytest.raises(
-        Exception, match="did not use the supplied music facts"
-    ):
-        await service._async_generate_grounded(
-            [item], "conversation.agent", "Write a transition."
-        )
-
-    assert "AI DJ grounding retry" in caplog.text
-    assert "AI DJ grounding rejection" in caplog.text
-    assert "Don't Stop" in caplog.text
-    assert "Next Song" in caplog.text
-    assert "A generic break." in caplog.text
-    assert "Still generic." in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_successful_grounding_retry_logs_accepted_response(
-    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
-) -> None:
-    """A successful correction retains the accepted transcript for diagnostics."""
-    from custom_components.aidj.runtime import AiDjRuntime
-
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        data={
-            CONF_NAME: "Living Room Radio",
-            CONF_PLAYER: "media_player.living_room_streamer_2",
-            CONF_TTS: "tts.openai_tts",
-        },
-    )
-    runtime = AiDjRuntime(hass, entry)
-    service = BriefingGenerationService(
-        hass, runtime.settings, runtime.player_entity_id, object(), ()
-    )
-    item = BriefingItem(
-        provider="music_assistant_queue",
-        title="Music context",
-        summary="Verified",
-        music_context=QueueContext(
-            current=TrackContext("Untitled #4 (Njósnavélin)"),
-            next=(TrackContext("/=/=/"),),
-        ),
-    )
-    accepted = "That was Untitled #4 (Njósnavélin); /=/=/ by Andrew Bird is next."
-    generate = AsyncMock(side_effect=["A generic break.", accepted])
-    caplog.set_level("INFO", logger="custom_components.aidj.briefing_generation")
+    accepted = "That was Filth is Eternal; Andrew Bird is coming up next."
+    generate = AsyncMock(return_value=accepted)
 
     with patch.object(HaConversationBriefingGenerator, "async_generate", generate):
         result = await service._async_generate_grounded(
@@ -1242,10 +1183,7 @@ async def test_successful_grounding_retry_logs_accepted_response(
         )
 
     assert result == accepted
-    assert "AI DJ grounding retry accepted" in caplog.text
-    assert "Untitled #4 (Njósnavélin)" in caplog.text
-    assert "/=/=/" in caplog.text
-    assert accepted in caplog.text
+    generate.assert_awaited_once()
 
 
 @pytest.mark.asyncio

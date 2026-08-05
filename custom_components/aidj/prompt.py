@@ -17,9 +17,10 @@ BRIEFING_STYLE_INSTRUCTIONS = (
     "Use the supplied facts as source material, but write like a human local radio DJ. "
     "When music context includes a current track, naturally identify the completed song "
     "or artist in the past tense. When an upcoming track is supplied, include a natural "
-    "coming-up-next reference to at least one of those tracks. Use the exact supplied "
-    "song and artist names exactly as written. Do not replace those specific references "
-    "with generic phrases like 'that was great' or 'more great music'. "
+    "coming-up-next reference to at least one upcoming track or artist. Music titles and "
+    "artists in the supplied facts are authoritative: never invent, complete, or substitute "
+    "metadata. You may refer to the artist without saying the title when a title is awkward "
+    "to speak, especially when it consists mostly or entirely of symbols. "
     "The broader structured music context is optional flavor: do not mention every "
     "previous track or genre at every break, and only add those details when natural. "
     "Treat the facts as a coherent briefing, not as an isolated checklist. When two or "
@@ -55,58 +56,6 @@ def _fact_lines(item: BriefingItem) -> list[str]:
             return music_lines
     return [item.summary]
 
-
-def music_required_terms(items: Sequence[BriefingItem]) -> tuple[str, ...]:
-    """Return exact current and first-upcoming track titles for grounding checks."""
-    terms: list[str] = []
-    for item in items:
-        context = item.music_context
-        if context is None:
-            continue
-        tracks = (context.current, context.next[0] if context.next else None)
-        terms.extend(track.track for track in tracks if track is not None)
-    return tuple(dict.fromkeys(terms))
-
-
-GROUNDING_PLACEHOLDERS = (
-    "[artist",
-    "[song",
-    "[insert ",
-    "song title",
-    "more great music",
-)
-
-
-def _normalize_grounding_text(value: str) -> str:
-    """Normalize harmless quote typography before exact title comparison."""
-    return (
-        value.casefold()
-        .replace("\u2018", "'")
-        .replace("\u2019", "'")
-        .replace("\u02bc", "'")
-        .replace("\u201c", '"')
-        .replace("\u201d", '"')
-    )
-
-
-def grounding_failures(
-    speech: str, required_terms: Sequence[str]
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Return missing exact titles and placeholder markers in generated speech."""
-    normalized = _normalize_grounding_text(speech)
-    missing = tuple(
-        term for term in required_terms if _normalize_grounding_text(term) not in normalized
-    )
-    placeholders = tuple(
-        marker for marker in GROUNDING_PLACEHOLDERS if marker in normalized
-    )
-    return missing, placeholders
-
-
-def briefing_needs_grounding_retry(speech: str, required_terms: Sequence[str]) -> bool:
-    """Reject placeholder or music-free output when exact track facts exist."""
-    missing, placeholders = grounding_failures(speech, required_terms)
-    return bool(missing or placeholders)
 
 
 def build_briefing_prompt(

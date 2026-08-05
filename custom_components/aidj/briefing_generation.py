@@ -16,12 +16,7 @@ from .const import (
     PROVIDER_MUSIC_ASSISTANT_QUEUE,
     StationSettings,
 )
-from .prompt import (
-    briefing_needs_grounding_retry,
-    build_briefing_prompt,
-    grounding_failures,
-    music_required_terms,
-)
+from .prompt import build_briefing_prompt
 from .story import select_feed_story
 
 _LOGGER = logging.getLogger(__name__)
@@ -140,53 +135,11 @@ class BriefingGenerationService:
         agent_id: str,
         prompt: str | None,
     ) -> str:
-        """Generate speech and retry once when exact music facts are omitted."""
+        """Generate speech from verified station facts in one conversation call."""
         full_prompt = build_briefing_prompt(
             items,
             prompt,
             self.settings.personality_instructions,
         )
         generator = HaConversationBriefingGenerator(self.hass, agent_id)
-        generated = await generator.async_generate(full_prompt)
-        required_terms = music_required_terms(items)
-        if required_terms and briefing_needs_grounding_retry(generated, required_terms):
-            missing, placeholders = grounding_failures(generated, required_terms)
-            _LOGGER.warning(
-                "AI DJ grounding retry for %s: required_titles=%r missing_titles=%r "
-                "placeholder_markers=%r generated=%r",
-                self.player_entity_id,
-                required_terms,
-                missing,
-                placeholders,
-                generated,
-            )
-            retry_prompt = (
-                f"{full_prompt}\n\n"
-                "Revision required: the announcement must include the exact completed/current "
-                f"track title ({required_terms[0]}) and the exact upcoming track title "
-                f"({required_terms[1] if len(required_terms) > 1 else required_terms[0]}). "
-                "Return only the revised spoken announcement, with no placeholders."
-            )
-            generated = await generator.async_generate(retry_prompt)
-            if briefing_needs_grounding_retry(generated, required_terms):
-                missing, placeholders = grounding_failures(generated, required_terms)
-                _LOGGER.error(
-                    "AI DJ grounding rejection for %s after retry: required_titles=%r "
-                    "missing_titles=%r placeholder_markers=%r generated=%r",
-                    self.player_entity_id,
-                    required_terms,
-                    missing,
-                    placeholders,
-                    generated,
-                )
-                raise HomeAssistantError(
-                    "Conversation agent returned an announcement that did not use the supplied "
-                    "music facts"
-                )
-            _LOGGER.info(
-                "AI DJ grounding retry accepted for %s: required_titles=%r generated=%r",
-                self.player_entity_id,
-                required_terms,
-                generated,
-            )
-        return generated
+        return await generator.async_generate(full_prompt)
