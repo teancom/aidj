@@ -1146,6 +1146,35 @@ def test_build_briefing_prompt_layers_task_personality_and_facts() -> None:
     assert "Facts:\n- Weather: sunny" in prompt
 
 
+def test_build_briefing_prompt_includes_explicit_local_time() -> None:
+    """The model receives HA's local clock and period instead of inferring them."""
+    local_now = datetime.fromisoformat("2026-08-05T11:32:00-07:00")
+
+    prompt = build_briefing_prompt([], now=local_now)
+
+    assert (
+        "Facts:\n- Current local date and time: Wednesday, August 5, 2026 "
+        "at 11:32 AM UTC-07:00 (morning)"
+    ) in prompt
+
+
+@pytest.mark.parametrize(
+    ("hour", "period"),
+    [
+        (0, "overnight"), (4, "overnight"), (5, "morning"), (11, "morning"),
+        (12, "afternoon"), (16, "afternoon"), (17, "evening"), (20, "evening"),
+        (21, "night"), (23, "night"),
+    ],
+)
+def test_build_briefing_prompt_local_time_period_boundaries(hour: int, period: str) -> None:
+    """Local-time period labels have explicit, stable boundaries."""
+    local_now = datetime(2026, 8, 5, hour, tzinfo=timezone(timedelta(hours=-7)))
+
+    prompt = build_briefing_prompt([], now=local_now)
+
+    assert f"({period})" in prompt
+
+
 @pytest.mark.asyncio
 async def test_symbol_title_allows_artist_only_output_without_retry(
     hass: HomeAssistant,
@@ -1184,6 +1213,38 @@ async def test_symbol_title_allows_artist_only_output_without_retry(
 
     assert result == accepted
     generate.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_generation_service_supplies_home_assistant_local_time(
+    hass: HomeAssistant,
+) -> None:
+    """Full briefing generation grounds the model in HA's local clock."""
+    from custom_components.aidj.runtime import AiDjRuntime
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+        },
+    )
+    runtime = AiDjRuntime(hass, entry)
+    service = BriefingGenerationService(
+        hass, runtime.settings, runtime.player_entity_id, object(), ()
+    )
+    local_now = datetime.fromisoformat("2026-08-05T11:32:00-07:00")
+    generate = AsyncMock(return_value="A morning briefing.")
+
+    with patch(
+        "custom_components.aidj.briefing_generation.dt_util.now",
+        return_value=local_now,
+    ), patch.object(HaConversationBriefingGenerator, "async_generate", generate):
+        await service._async_generate_grounded([], "conversation.agent", None)
+
+    sent_prompt = generate.await_args.args[0]
+    assert "at 11:32 AM UTC-07:00 (morning)" in sent_prompt
 
 
 @pytest.mark.asyncio

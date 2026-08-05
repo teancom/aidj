@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 
 from .briefing import BriefingItem
 from .music_context import QueueContext, TrackContext
@@ -58,15 +59,38 @@ def _fact_lines(item: BriefingItem) -> list[str]:
 
 
 
+def _local_time_fact(now: datetime) -> str:
+    """Describe Home Assistant's local wall-clock time without model inference."""
+    if now.hour < 5:
+        period = "overnight"
+    elif now.hour < 12:
+        period = "morning"
+    elif now.hour < 17:
+        period = "afternoon"
+    elif now.hour < 21:
+        period = "evening"
+    else:
+        period = "night"
+    timezone_name = now.tzname() or "local time"
+    date_text = now.strftime("%A, %B %d, %Y").replace(" 0", " ")
+    time_text = now.strftime("%I:%M %p").lstrip("0")
+    return (
+        f"Current local date and time: {date_text} at {time_text} "
+        f"{timezone_name} ({period})"
+    )
+
+
 def build_briefing_prompt(
     items: Sequence[BriefingItem],
     custom_prompt: str | None = None,
     personality_instructions: str | None = None,
+    *,
+    now: datetime | None = None,
 ) -> str:
     """Build the exact prompt sent to the configured conversation agent."""
-    facts = "\n".join(
-        f"- {line}" for item in items for line in _fact_lines(item)
-    )
+    fact_lines = [_local_time_fact(now)] if now is not None else []
+    fact_lines.extend(line for item in items for line in _fact_lines(item))
+    facts = "\n".join(f"- {line}" for line in fact_lines)
     opening = (custom_prompt or DEFAULT_BRIEFING_PROMPT).strip()
     personality = (personality_instructions or "").strip()
     personality_section = (

@@ -8,6 +8,7 @@ import logging
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.util import dt as dt_util
 
 from .briefing import HaConversationBriefingGenerator, BriefingItem, QueueProvider
 from .briefing_assembly import async_collect_station_briefing
@@ -140,6 +141,7 @@ class BriefingGenerationService:
             items,
             prompt,
             self.settings.personality_instructions,
+            now=dt_util.now(),
         )
         generator = HaConversationBriefingGenerator(self.hass, agent_id)
         return await generator.async_generate(full_prompt)
