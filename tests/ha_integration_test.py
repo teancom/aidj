@@ -1205,6 +1205,50 @@ async def test_grounding_rejection_logs_required_terms_and_both_responses(
 
 
 @pytest.mark.asyncio
+async def test_successful_grounding_retry_logs_accepted_response(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A successful correction retains the accepted transcript for diagnostics."""
+    from custom_components.aidj.runtime import AiDjRuntime
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+        },
+    )
+    runtime = AiDjRuntime(hass, entry)
+    service = BriefingGenerationService(
+        hass, runtime.settings, runtime.player_entity_id, object(), ()
+    )
+    item = BriefingItem(
+        provider="music_assistant_queue",
+        title="Music context",
+        summary="Verified",
+        music_context=QueueContext(
+            current=TrackContext("Untitled #4 (Njósnavélin)"),
+            next=(TrackContext("/=/=/"),),
+        ),
+    )
+    accepted = "That was Untitled #4 (Njósnavélin); /=/=/ by Andrew Bird is next."
+    generate = AsyncMock(side_effect=["A generic break.", accepted])
+    caplog.set_level("INFO", logger="custom_components.aidj.briefing_generation")
+
+    with patch.object(HaConversationBriefingGenerator, "async_generate", generate):
+        result = await service._async_generate_grounded(
+            [item], "conversation.agent", "Write a transition."
+        )
+
+    assert result == accepted
+    assert "AI DJ grounding retry accepted" in caplog.text
+    assert "Untitled #4 (Njósnavélin)" in caplog.text
+    assert "/=/=/" in caplog.text
+    assert accepted in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_conversation_generator_extracts_plain_speech(
     hass: HomeAssistant,
 ) -> None:

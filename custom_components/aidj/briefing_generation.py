@@ -183,4 +183,10 @@ class BriefingGenerationService:
                     "Conversation agent returned an announcement that did not use the supplied "
                     "music facts"
                 )
+            _LOGGER.info(
+                "AI DJ grounding retry accepted for %s: required_titles=%r generated=%r",
+                self.player_entity_id,
+                required_terms,
+                generated,
+            )
         return generated
