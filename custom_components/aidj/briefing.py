@@ -51,12 +51,30 @@ class BriefingProvider(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class BriefingClock:
+    """One HA-local instant shared by every source in a briefing run."""
+
+    local_now: datetime
+
+    @classmethod
+    def capture(cls) -> BriefingClock:
+        """Capture Home Assistant's timezone-aware wall clock once."""
+        return cls(dt_util.now())
+
+    @property
+    def utc_now(self) -> datetime:
+        """Return the same captured instant normalized for UTC comparisons."""
+        return self.local_now.astimezone(timezone.utc)
+
+
+@dataclass(frozen=True, slots=True)
 class WeatherEntityProvider:
     """Expose the current state of one Home Assistant weather entity."""
 
     hass: HomeAssistant
     entity_id: str
     name: str = "weather"
+    clock: BriefingClock | None = None
 
     async def async_collect(self) -> list[BriefingItem]:
         """Return current conditions plus the relevant daily forecast."""
@@ -76,7 +94,7 @@ class WeatherEntityProvider:
             unit = attributes.get("wind_speed_unit", "")
             details.append(f"wind: {wind_speed}{unit}")
 
-        now = dt_util.now()
+        now = self.clock.local_now if self.clock is not None else dt_util.now()
         forecast_days = 1 if now.hour < 12 else 2
         try:
             response = await self.hass.services.async_call(
@@ -266,6 +284,7 @@ class FeedreaderEventProvider:
     hass: HomeAssistant
     entity_id: str
     name: str = PROVIDER_FEEDREADER
+    clock: BriefingClock | None = None
 
     async def async_collect(self) -> list[BriefingItem]:
         """Return all entries retained by Feedreader, newest first."""
@@ -294,7 +313,7 @@ class FeedreaderEventProvider:
                 event_data = state.attributes
             entries = [event_data]
 
-        now = dt_util.now().astimezone(timezone.utc)
+        now = self.clock.utc_now if self.clock is not None else dt_util.now().astimezone(timezone.utc)
         return [
             item
             for entry in entries
@@ -346,6 +365,7 @@ class CalendarEventProvider:
     relevance_days: int = 2
     max_results: int = 20
     name: str = "calendar"
+    clock: BriefingClock | None = None
 
     async def async_collect(self) -> list[BriefingItem]:
         """Return upcoming calendar events without changing the calendar."""
@@ -353,7 +373,7 @@ class CalendarEventProvider:
         if state is None:
             return []
 
-        window_start = dt_util.now()
+        window_start = self.clock.local_now if self.clock is not None else dt_util.now()
         window_end = window_start + timedelta(days=self.days)
         response = await self.hass.services.async_call(
             "calendar",

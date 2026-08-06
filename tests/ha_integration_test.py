@@ -523,6 +523,31 @@ def test_briefing_provider_assembly_preserves_source_order_and_settings(
     assert providers[5].player_entity_id == "media_player.living_room_streamer_2"
 
 
+def test_briefing_provider_assembly_shares_one_clock_snapshot(
+    hass: HomeAssistant,
+) -> None:
+    """All time-sensitive providers receive the exact same captured instant."""
+    captured = datetime.fromisoformat("2026-08-05T23:59:59.999999-07:00")
+    providers = build_briefing_providers(
+        hass,
+        StationSettings.from_mapping(
+            {
+                CONF_FEEDS: ["event.local_news"],
+                CONF_CALENDARS: ["calendar.home"],
+            }
+        ),
+        weather_entity_id="weather.forecast_home",
+        player_entity_id="media_player.living_room_streamer_2",
+        music_assistant_client=None,
+        now=captured,
+    )
+
+    weather, feed, calendar = providers[:3]
+    assert weather.clock is feed.clock is calendar.clock
+    assert weather.clock.local_now is captured
+    assert feed.clock.utc_now == datetime.fromisoformat("2026-08-06T06:59:59.999999+00:00")
+
+
 @pytest.mark.asyncio
 async def test_queue_provider_normalizes_current_and_next_tracks(
     hass: HomeAssistant,
@@ -1208,7 +1233,10 @@ async def test_symbol_title_allows_artist_only_output_without_retry(
 
     with patch.object(HaConversationBriefingGenerator, "async_generate", generate):
         result = await service._async_generate_grounded(
-            [item], "conversation.agent", "Write a transition."
+            [item],
+            "conversation.agent",
+            "Write a transition.",
+            now=datetime.fromisoformat("2026-08-05T11:32:00-07:00"),
         )
 
     assert result == accepted
@@ -1237,14 +1265,56 @@ async def test_generation_service_supplies_home_assistant_local_time(
     local_now = datetime.fromisoformat("2026-08-05T11:32:00-07:00")
     generate = AsyncMock(return_value="A morning briefing.")
 
-    with patch(
-        "custom_components.aidj.briefing_generation.dt_util.now",
-        return_value=local_now,
-    ), patch.object(HaConversationBriefingGenerator, "async_generate", generate):
-        await service._async_generate_grounded([], "conversation.agent", None)
+    with patch.object(HaConversationBriefingGenerator, "async_generate", generate):
+        await service._async_generate_grounded(
+            [], "conversation.agent", None, now=local_now
+        )
 
     sent_prompt = generate.await_args.args[0]
     assert "at 11:32 AM UTC-07:00 (morning)" in sent_prompt
+
+
+@pytest.mark.asyncio
+async def test_full_generation_captures_clock_once_across_midnight(
+    hass: HomeAssistant,
+) -> None:
+    """Collection and prompting cannot observe opposite sides of midnight."""
+    from custom_components.aidj.runtime import AiDjRuntime
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_NAME: "Living Room Radio",
+            CONF_PLAYER: "media_player.living_room_streamer_2",
+            CONF_TTS: "tts.openai_tts",
+        },
+    )
+    runtime = AiDjRuntime(hass, entry)
+    service = BriefingGenerationService(
+        hass, runtime.settings, runtime.player_entity_id, object(), ()
+    )
+    before_midnight = datetime.fromisoformat("2026-08-05T23:59:59.999999-07:00")
+    after_midnight = datetime.fromisoformat("2026-08-06T00:00:00-07:00")
+    clock = Mock(side_effect=[before_midnight, after_midnight])
+    collect = AsyncMock(
+        return_value=BriefingCollection(
+            [BriefingItem("weather", "Weather", "Weather: clear")], {}
+        )
+    )
+    generate = AsyncMock(return_value="A late-night briefing.")
+
+    with patch(
+        "custom_components.aidj.briefing_generation.dt_util.now", clock
+    ), patch(
+        "custom_components.aidj.briefing_generation.async_collect_station_briefing",
+        collect,
+    ), patch.object(HaConversationBriefingGenerator, "async_generate", generate):
+        await service.async_generate("weather.home", "conversation.agent")
+
+    clock.assert_called_once_with()
+    assert collect.await_args.kwargs["now"] is before_midnight
+    sent_prompt = generate.await_args.args[0]
+    assert "Wednesday, August 5, 2026 at 11:59 PM UTC-07:00 (night)" in sent_prompt
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Sequence
 import logging
 
@@ -63,6 +64,7 @@ class BriefingGenerationService:
         if not weather_entity_id or not agent_id:
             raise ServiceValidationError("weather_entity_id and agent_id must not be empty")
 
+        now = dt_util.now()
         collection = await async_collect_station_briefing(
             self.hass,
             self.settings,
@@ -70,6 +72,7 @@ class BriefingGenerationService:
             player_entity_id=self.player_entity_id,
             music_assistant_client=self.music_assistant_client,
             music_assistant_player_id=self.music_assistant_player_id,
+            now=now,
         )
         items = collection.items
         selected_story = select_feed_story(items, self.recent_story_ids)
@@ -102,7 +105,7 @@ class BriefingGenerationService:
                 "the briefing was not generated"
             )
 
-        generated = await self._async_generate_grounded(items, agent_id, prompt)
+        generated = await self._async_generate_grounded(items, agent_id, prompt, now=now)
         return GeneratedBriefing(generated, selected_story.identity if selected_story else None)
 
     async def async_generate_music_transition(self, agent_id: str) -> GeneratedBriefing:
@@ -127,7 +130,9 @@ class BriefingGenerationService:
             "Naturally identify the completed track and introduce at least one upcoming track. "
             "Use two concise spoken sentences and no non-music topics."
         )
-        generated = await self._async_generate_grounded(items, agent_id, prompt)
+        generated = await self._async_generate_grounded(
+            items, agent_id, prompt, now=dt_util.now()
+        )
         return GeneratedBriefing(generated)
 
     async def _async_generate_grounded(
@@ -135,13 +140,15 @@ class BriefingGenerationService:
         items: Sequence[BriefingItem],
         agent_id: str,
         prompt: str | None,
+        *,
+        now: datetime,
     ) -> str:
         """Generate speech from verified station facts in one conversation call."""
         full_prompt = build_briefing_prompt(
             items,
             prompt,
             self.settings.personality_instructions,
-            now=dt_util.now(),
+            now=now,
         )
         generator = HaConversationBriefingGenerator(self.hass, agent_id)
         return await generator.async_generate(full_prompt)
