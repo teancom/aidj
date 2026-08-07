@@ -28,6 +28,7 @@ class ManifestTests(unittest.TestCase):
             self.assertIn(key, manifest)
         self.assertEqual(manifest["domain"], "aidj")
         self.assertTrue(manifest["config_flow"])
+        self.assertEqual(manifest["requirements"], ["mutagen==1.48.1"])
 
     def test_hacs_metadata_has_name(self) -> None:
         hacs = json.loads((ROOT / "hacs.json").read_text())
